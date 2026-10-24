@@ -44,11 +44,17 @@ export type Event = {
   type: string; message?: any; messages?: any[]; threadId?: string; localId?: string; thread?: Thread; id?: string | number;
 };
 export type Chat = Thread & Meta & { title: string };
+export type RateLimitWindow = { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null };
+export type RateLimitSnapshot = {
+  limitId?: string | null; limitName?: string | null; primary?: RateLimitWindow | null; secondary?: RateLimitWindow | null;
+};
+export type AccountLimits = { rateLimits?: RateLimitSnapshot | null; rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null };
 
 declare global {
   interface Window {
     codex: {
       bootstrap(): Promise<{ state: State; home: string; threads: { data: Thread[]; nextCursor: string | null }; models: Model[]; authenticated: boolean; requests: ServerRequest[]; defaults?: { model: string; effort: string } }>;
+      rateLimits(): Promise<AccountLimits | null>;
       save(state: State): Promise<void>;
       list(cursor?: string | null, searchTerm?: string | null): Promise<{ data: Thread[]; nextCursor: string | null }>;
       history(id: string, cursor?: HistoryCursor | null): Promise<HistoryPage>;

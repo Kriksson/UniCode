@@ -93,8 +93,15 @@ kbd { font-family: inherit; }
 .sidebar-empty { font-size: 11px; line-height: 1.7; color: #b1a8a2; padding: 2px 11px; }
 .load-more { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 13px 5px 5px; font-size: 10px; color: #aaa09a; }
 .load-more:hover { color: var(--red); }
-.sidebar-bottom { display: flex; flex-shrink: 0; align-items: center; gap: 7px; min-height: 53px; border-top: 1px solid var(--line); margin: 0 22px; font-size: 10px; color: #9d938c; }
+.sidebar-bottom { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; column-gap: 7px; row-gap: 12px; min-height: 53px; padding: 15px 0; border-top: 1px solid var(--line); margin: 0 22px; font-size: 10px; color: #9d938c; }
 .sidebar-bottom button { padding: 0; margin-left: auto; font-size: 10px; color: var(--red); }
+.plan-usage { flex-basis: 100%; display: grid; gap: 7px; font-size: 9px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.plan-usage-row { display: grid; grid-template-columns: 40px 70px minmax(0, 1fr); align-items: baseline; column-gap: 6px; white-space: nowrap; }
+.plan-usage-period { color: #9d938c; }
+.plan-usage-percent { color: #8e7b6f; }
+.plan-usage-percent > span { color: #b9aaa0; }
+.plan-usage-percent.low { color: var(--red); }
+.plan-usage-reset { text-align: right; color: #a39489; }
 .connection-dot { width: 5px; height: 5px; border-radius: 50%; background: #b9b0ac; }
 .connection-dot.online { background: #6f9a76; }
 .main { display: flex; flex-direction: column; position: relative; min-width: 0; height: 100dvh; }

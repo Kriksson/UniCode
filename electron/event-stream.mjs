@@ -2,7 +2,7 @@ import { uiItem } from './history.mjs';
 
 const deltas = new Set(['item/agentMessage/delta', 'item/commandExecution/outputDelta', 'item/reasoning/summaryTextDelta']);
 const events = new Set([...deltas, 'turn/started', 'turn/completed', 'item/started', 'item/completed',
-  'item/mcpToolCall/progress', 'thread/deleted', 'thread/name/updated', 'account/login/completed', 'account/updated', 'serverRequest/resolved', 'error']);
+  'item/mcpToolCall/progress', 'thread/deleted', 'thread/name/updated', 'account/login/completed', 'account/updated', 'account/rateLimits/updated', 'serverRequest/resolved', 'error']);
 
 /** Coalesce token bursts, preserving protocol order at item/turn boundaries. */
 export class EventStream {

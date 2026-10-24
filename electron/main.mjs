@@ -24,6 +24,7 @@ let store;
 let attention;
 let history;
 let stream;
+let limitsRead;
 const activeTurns = new Set();
 let quitting = false;
 const emit = (type, payload) => {
@@ -83,6 +84,13 @@ function registerHandlers() {
     };
   });
   handle('save', value => store.save(value));
+  handle('rate-limits', () => {
+    if (!rpc.connected) return null;
+    if (!limitsRead) limitsRead = rpc.request('account/rateLimits/read', {}).then(result => ({
+      rateLimits: result.rateLimits || null, rateLimitsByLimitId: result.rateLimitsByLimitId || null,
+    })).finally(() => { limitsRead = null; });
+    return limitsRead;
+  });
   handle('list', (cursor = null, searchTerm = null) => rpc.request('thread/list', {
     limit: 100, cursor, sortKey: 'updated_at', modelProviders: [], sourceKinds: ['cli', 'vscode', 'appServer'], searchTerm,
   }));

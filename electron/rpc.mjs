@@ -57,7 +57,7 @@ export class CodexRpc extends EventEmitter {
     child.stdin.on('error', () => {});
     try {
       const result = await this.request('initialize', {
-        clientInfo: { name: 'unicode_v1', title: 'UniCode v1', version: '1.3.0' },
+        clientInfo: { name: 'unicode_v1', title: 'UniCode v1', version: '1.4.1' },
       });
       this.notify('initialized', {});
       this.connected = true;

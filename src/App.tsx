@@ -7,6 +7,7 @@ import appIcon from '../assets/unicode-generated.png';
 import { questionReplies, messageLinkUrl, liveActivity } from './presentation';
 import { RunOptions } from './RunOptions';
 import { ChatHistory } from './ChatHistory';
+import { PlanUsage } from './PlanUsage';
 import { collectAnswers, HISTORY_START, prependHistory } from './history';
 
 const api = window.codex;
@@ -519,7 +520,7 @@ export function App() {
           }}>{loadingMore ? <LoaderCircle size={13} className="spinning" /> : <ChevronDown size={13} />}Более ранние чаты</button>}
         </section>}
       </div>
-      <div className="sidebar-bottom"><span className={`connection-dot ${connected ? 'online' : ''}`} /><span>{booting ? 'Подключение…' : connected ? 'Агент активен' : 'Нет соединения'}</span>{!connected && !booting && <button onClick={bootstrap}>Повторить</button>}</div>
+      <div className="sidebar-bottom"><span className={`connection-dot ${connected ? 'online' : ''}`} /><span>{booting ? 'Подключение…' : connected ? 'Агент активен' : 'Нет соединения'}</span><PlanUsage connected={connected} authenticated={authenticated} />{!connected && !booting && <button onClick={bootstrap}>Повторить</button>}</div>
     </aside>
 
     <main className="main">
