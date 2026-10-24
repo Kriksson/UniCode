@@ -1,0 +1,9 @@
+# Иконка UniCode v1
+
+Создана встроенным инструментом imagegen. Исходный PNG сохранён без изменения изображения в `assets/unicode-generated.png`; `assets/icon.png` содержит ту же иконку для сборки и ярлыков Fedora. Прежний PNG сохранён в `assets/icon-original.png`.
+
+Иконка отображается в шапке рядом с названием. Подпись `by krkss` находится под `UniCode v1`.
+
+## Промпт
+
+Use case: logo-brand. Asset type: final application icon for a minimalist desktop coding chat application named UniCode v1, displayed at 32 to 40 pixels in the application's header and as a Fedora desktop icon. Create ONE finished square app icon, not a presentation or mockup. Subject: a distinctive bold geometric white U monogram, subtly inspired by a pair of coding brackets joined into one U. The symbol must be instantly legible as a U, simple, upright, balanced, and optically centered. A single unified thick white symbol with clean straight upper stems and a softly squared bottom curve. Background inside the icon: solid vermilion red #d73737, shaped as a rounded square with generous precise corners. Outside the rounded square: genuine transparent alpha. Style: exceptionally clean flat vector-like graphic, crisp edges, professional minimal software identity. Composition: front-facing square canvas, the rounded square fills 94 percent of the canvas width, white U occupies about 55 percent of the red square, even clear space around it. Palette strictly white #ffffff and red #d73737. Constraints: no words, no wordmark, no caption, no version number, no small detail, no border, no gradients, no shading, no glow, no 3D, no texture, no shadows, no extra symbols, no watermark. The U should be the complete recognizable mark, not a generic code-slash icon. Deliver a single ready-to-use high-resolution PNG app icon with transparent outer corners.

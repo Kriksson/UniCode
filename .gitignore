@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+test-results/
+playwright-report/
+*.log
+.env
+.env.*
+!.env.example
+.codex/
+.idea/
+.vscode/
+*.AppImage
