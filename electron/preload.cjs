@@ -7,7 +7,9 @@ contextBridge.exposeInMainWorld('codex', {
   external: invoke('external'), window: invoke('window'),
   openLink: invoke('open-link'), deleteChat: invoke('delete-chat'), deleteFrom: invoke('delete-from'),
   steer: invoke('steer'),
-  rateLimits: invoke('rate-limits'),
+  rateLimits: invoke('rate-limits'), manageChat: invoke('manage-chat'),
+  phoneStatus: invoke('phone-status'), phoneStart: invoke('phone-start'), phoneStop: invoke('phone-stop'),
+  phoneCode: invoke('phone-code'), phoneRevoke: invoke('phone-revoke'),
   onEvent: callback => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('codex:event', listener);

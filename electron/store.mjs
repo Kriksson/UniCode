@@ -36,4 +36,16 @@ export class LocalStore {
     this.queue = operation;
     return operation;
   }
+
+  update(transform) {
+    const operation = this.queue.catch(() => {}).then(async () => {
+      const value = validateState(transform(await this.read()));
+      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+      await writeFile(this.path + '.tmp', JSON.stringify(value, null, 2), { mode: 0o600 });
+      await rename(this.path + '.tmp', this.path);
+      return value;
+    });
+    this.queue = operation;
+    return operation;
+  }
 }

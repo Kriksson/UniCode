@@ -18,6 +18,14 @@ export type Meta = {
   draft?: boolean; createdAt?: number; updatedAt?: number;
   model?: string; effort?: string; access?: State['access'];
 };
+export type ChatAction =
+  | { kind: 'rename'; id: string; name: string }
+  | { kind: 'pin'; id: string; pinned: boolean }
+  | { kind: 'move'; id: string; folderId: string | null }
+  | { kind: 'hide'; id: string }
+  | { kind: 'folder-create'; name: string }
+  | { kind: 'folder-rename'; id: string; name: string }
+  | { kind: 'folder-delete'; id: string };
 export type State = {
   version: 1; folders: { id: string; name: string }[]; chats: Record<string, Meta>;
   hidden: string[]; selectedId: string | null; cwd: string | null; model: string;
@@ -49,13 +57,24 @@ export type RateLimitSnapshot = {
   limitId?: string | null; limitName?: string | null; primary?: RateLimitWindow | null; secondary?: RateLimitWindow | null;
 };
 export type AccountLimits = { rateLimits?: RateLimitSnapshot | null; rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null };
+export type PhoneStatus = {
+  enabled: boolean; addresses: { name: string; address: string; netmask: string }[];
+  host: string | null; url: string | null; pairingUrl: string | null; expiresAt: number | null; qr: string | null;
+  fingerprint: string | null; devices: { id: string; name: string; connectedAt: number }[];
+};
 
 declare global {
   interface Window {
     codex: {
-      bootstrap(): Promise<{ state: State; home: string; threads: { data: Thread[]; nextCursor: string | null }; models: Model[]; authenticated: boolean; requests: ServerRequest[]; defaults?: { model: string; effort: string } }>;
+      bootstrap(): Promise<{ state: State; home: string; threads: { data: Thread[]; nextCursor: string | null }; models: Model[]; authenticated: boolean; requests: ServerRequest[]; defaults?: { model: string; effort: string }; activeTurns?: { threadId: string; turnId: string }[] }>;
+      phoneStatus(): Promise<PhoneStatus>;
+      phoneStart(host?: string): Promise<PhoneStatus>;
+      phoneStop(): Promise<PhoneStatus>;
+      phoneCode(): Promise<PhoneStatus>;
+      phoneRevoke(id: string): Promise<PhoneStatus>;
       rateLimits(): Promise<AccountLimits | null>;
       save(state: State): Promise<void>;
+      manageChat(action: ChatAction): Promise<Pick<State, 'folders' | 'chats' | 'hidden'>>;
       list(cursor?: string | null, searchTerm?: string | null): Promise<{ data: Thread[]; nextCursor: string | null }>;
       history(id: string, cursor?: HistoryCursor | null): Promise<HistoryPage>;
       send(value: { id?: string; localId: string; text: string; cwd: string; model: string; effort?: string; access?: State['access'] }): Promise<{ thread: Thread; turn: Turn }>;

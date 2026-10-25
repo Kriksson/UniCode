@@ -8,6 +8,7 @@ import { questionReplies, messageLinkUrl, liveActivity } from './presentation';
 import { RunOptions } from './RunOptions';
 import { ChatHistory } from './ChatHistory';
 import { PlanUsage } from './PlanUsage';
+import { PhoneConnect } from './PhoneConnect';
 import { collectAnswers, HISTORY_START, prependHistory } from './history';
 
 const api = window.codex;
@@ -101,6 +102,11 @@ export function App() {
       setCursor(result.threads.nextCursor); setModels(result.models);
       setDefaults(result.defaults || { model: '', effort: '' });
       setAuthenticated(result.authenticated); setRequests(result.requests);
+      setRuntime(all => {
+        const next = { ...all };
+        for (const turn of result.activeTurns || []) if (!next[turn.threadId]) next[turn.threadId] = { ...blankRuntime(), busy: true, turnId: turn.turnId, activity: 'Агент работает' };
+        return next;
+      });
       setReady(true); setConnected(true);
     } catch (error) { setError(errorText(error)); }
     finally { setBooting(false); }
@@ -117,6 +123,18 @@ export function App() {
       setScrollSignal(value => value + 1);
       setView('all'); setQuery(''); setMenu(null); setFolderMenu(null);
       setState(value => ({ ...value, selectedId: event.threadId!, hidden: value.hidden.filter(id => id !== event.threadId) }));
+      return;
+    }
+    if (event.type === 'state-updated') {
+      const shared = event.message as Pick<State, 'chats' | 'folders' | 'hidden'>;
+      setView(view => view === 'all' || view === 'pinned' || shared.folders.some(folder => folder.id === view) ? view : 'all');
+      setState(value => JSON.stringify({ chats: value.chats, folders: value.folders, hidden: value.hidden }) === JSON.stringify({ chats: shared.chats, folders: shared.folders, hidden: shared.hidden }) ? value : { ...value, ...shared });
+      return;
+    }
+    if (event.type === 'history-invalidated' && event.threadId) {
+      const id = event.threadId;
+      historyEpoch.current.set(id, (historyEpoch.current.get(id) || 0) + 1);
+      setRuntime(all => ({ ...all, [id]: { ...blankRuntime(), historyVersion: (all[id]?.historyVersion || 0) + 1 } }));
       return;
     }
     if (event.type === 'disconnected') {
@@ -302,7 +320,7 @@ export function App() {
   }, [activeId, runningThreads]);
 
   useEffect(() => {
-    if (activeId && !selected?.draft && !runtimeRef.current[activeId]?.loaded && !runtimeRef.current[activeId]?.busy && !runtimeRef.current[activeId]?.error)
+    if (activeId && !selected?.draft && !runtimeRef.current[activeId]?.loaded && !runtimeRef.current[activeId]?.error)
       void loadHistory(activeId);
   }, [activeId, selected?.draft, active.busy, active.loaded, loadHistory]);
 
@@ -528,6 +546,7 @@ export function App() {
         {!sidebar && <IconButton label="Показать боковую панель" onClick={() => setSidebar(true)}><PanelLeftOpen size={18} /></IconButton>}
         <div className="breadcrumb">{currentFolder || emptyFolder ? <><Folder size={14} /><span>{currentFolder?.name || visibleFolder?.name}</span><span className="breadcrumb-slash">/</span></> : null}<span className="chat-heading">{selected?.title || 'Новый чат'}</span></div>
         <div className="topbar-actions">
+          <PhoneConnect />
           {selected && <><IconButton label={selected.pinned ? 'Открепить чат' : 'Закрепить чат'} className={selected.pinned ? 'is-pinned' : ''} onClick={() => patchMeta(selected.id, { pinned: !selected.pinned })}><Pin size={16} /></IconButton><IconButton label="Действия чата" onClick={() => setMenu({ id: activeId, x: window.innerWidth - 135, y: 52 })}><MoreHorizontal size={19} /></IconButton><span className="topbar-divider" /></>}
           <div className="window-controls"><IconButton label="Свернуть" onClick={() => void api.window('minimize')}><Minus size={14} /></IconButton><IconButton label="Развернуть" onClick={() => void api.window('maximize')}><Square size={11} /></IconButton><IconButton label="Закрыть" className="close-window" onClick={() => void api.window('close')}><X size={15} /></IconButton></div>
         </div>
@@ -585,7 +604,7 @@ export function App() {
   </div>;
 }
 
-const Message = memo(function Message({ item, copied, copy, cwd, onError, canDelete: allowDelete, onDelete, answeredQuestions, onAnswer, questionDrafts }: { item: Item; copied: string; copy: (text: string, id: string) => Promise<void>; cwd: string; onError: (message: string) => void; canDelete: boolean; onDelete: (item: Item) => void; answeredQuestions: Set<string>; onAnswer: (text: string) => Promise<boolean>; questionDrafts: Map<string, Record<number, string>> }) {
+export const Message = memo(function Message({ item, copied, copy, cwd, onError, canDelete: allowDelete, onDelete, answeredQuestions, onAnswer, questionDrafts }: { item: Item; copied: string; copy: (text: string, id: string) => Promise<void>; cwd: string; onError: (message: string) => void; canDelete: boolean; onDelete: (item: Item) => void; answeredQuestions: Set<string>; onAnswer: (text: string) => Promise<boolean>; questionDrafts: Map<string, Record<number, string>> }) {
   const canDelete = allowDelete && !!item.turnId;
   if (item.type === 'userMessage') {
     const text = (item.content || []).filter(value => value.type === 'text').map(value => value.text).join('\n');
@@ -648,7 +667,7 @@ function AsyncQuestions({ item, answeredQuestions, onAnswer, draftCache }: { ite
   </form>;
 }
 
-function Approval({ request, onError, items }: { request: ServerRequest; onError: (error: string) => void; items: Item[] }) {
+export function Approval({ request, onError, items }: { request: ServerRequest; onError: (error: string) => void; items: Item[] }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const isQuestion = request.method === 'item/tool/requestUserInput';
