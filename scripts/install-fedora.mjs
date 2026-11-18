@@ -29,17 +29,22 @@ await rename(launcher + '.tmp', launcher);
 await mkdir(dirname(manifest), { recursive: true });
 await writeFile(manifest + '.tmp', JSON.stringify({ directory: relative(root, buildDirectory) }, null, 2) + '\n');
 await rename(manifest + '.tmp', manifest);
-const installedIcon = join(icons, 'unicode-v1.png');
-await copyFile(join(root, 'assets/icon.png'), installedIcon);
+const installedIcon = join(icons, 'unicode-v2.png');
+await copyFile(join(root, 'assets/icon-v2.png'), installedIcon);
 // An absolute icon path also works when the desktop has a stale icon-theme cache.
-const entry = `[Desktop Entry]\nVersion=1.0\nType=Application\nName=UniCode v1\nComment=Минималистичный клиент Codex CLI · by krkss\nExec=${desktopEscape(launcher)}\nIcon=${desktopEscape(installedIcon)}\nTerminal=false\nCategories=Development;\nKeywords=Codex;AI;Chat;UniCode;\nStartupNotify=true\nStartupWMClass=unicode-v1\n`;
+const entry = `[Desktop Entry]\nVersion=1.0\nType=Application\nName=UniCode v2\nComment=Минималистичный клиент Codex CLI · by krkss\nExec=${desktopEscape(launcher)}\nIcon=${desktopEscape(installedIcon)}\nTerminal=false\nCategories=Development;\nKeywords=Codex;AI;Chat;UniCode;\nStartupNotify=true\nStartupWMClass=unicode-v1\n`;
 const desktopFile = join(applications, 'unicode-v1.desktop');
 await writeFile(desktopFile, entry);
 let desktop;
 try { desktop = execFileSync('xdg-user-dir', ['DESKTOP'], { encoding: 'utf8' }).trim(); } catch { /* Menu shortcut is always installed. */ }
 if (desktop) {
   await mkdir(desktop, { recursive: true });
-  const shortcut = join(desktop, 'UniCode v1.desktop');
+  const shortcut = join(desktop, 'UniCode v2.desktop');
+  const previous = join(desktop, 'UniCode v1.desktop');
+  try {
+    const entryBefore = await readFile(previous, 'utf8');
+    if (entryBefore.includes('StartupWMClass=unicode-v1') && entryBefore.includes('unicode-v1')) await rename(previous, shortcut);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await writeFile(shortcut, entry, { mode: 0o755 });
   await chmod(shortcut, 0o755);
   console.log(`Рабочий стол: ${shortcut}`);

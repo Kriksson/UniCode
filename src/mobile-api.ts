@@ -43,12 +43,12 @@ function events() {
   return opened;
 }
 
-async function request<T>(method: string, args: unknown[] = []): Promise<T> {
+async function request<T>(method: string, args: unknown[] = [], upload = false): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 55000);
   try {
-    const response = await fetch('/rpc', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }), signal: controller.signal });
+    const response = await fetch(upload ? '/attachment' : '/rpc', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upload ? args[0] : { method, args }), signal: controller.signal });
     const payload = await response.json();
     if (response.status === 401) { closeMobileApi(); window.dispatchEvent(new Event('unicode-unpaired')); }
     if (!response.ok || payload.error) throw new Error(payload.error || 'Не удалось выполнить действие.');
@@ -68,9 +68,11 @@ export function installMobileApi() {
   const unsupported = async (): Promise<never> => { throw new Error('Это действие доступно на компьютере.'); };
   const api: Api = {
     bootstrap: async () => { await events(); return request<Awaited<ReturnType<Api['bootstrap']>>>('bootstrap'); },
+    connections: (...args) => request('connections', args), connectionEnabled: (...args) => request('connection-enabled', args),
     list: (...args) => request('list', args), history: (...args) => request('history', args),
     send: (...args) => request('send', args), steer: (...args) => request('steer', args),
     interrupt: (...args) => request('interrupt', args), answer: (...args) => request('answer', args),
+    uploadAttachment: value => request('upload-attachment', [value], true),
     manageChat: (...args) => request('manage-chat', args),
     rateLimits: () => request('rate-limits'), save: unsupported, chooseFolder: unsupported,
     login: unsupported, deleteChat: (...args) => request('delete-chat', args), deleteFrom: (...args) => request('delete-from', args), window: unsupported,

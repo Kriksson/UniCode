@@ -57,7 +57,7 @@ export class CodexRpc extends EventEmitter {
     child.stdin.on('error', () => {});
     try {
       const result = await this.request('initialize', {
-        clientInfo: { name: 'unicode_v1', title: 'UniCode v1', version: '1.5.3' },
+        clientInfo: { name: 'unicode_v1', title: 'UniCode v2', version: '2.2.0' },
       });
       this.notify('initialized', {});
       this.connected = true;
@@ -93,13 +93,13 @@ export class CodexRpc extends EventEmitter {
     this.child.stdin.write(JSON.stringify(value) + '\n');
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, { timeoutMs = this.timeout } = {}) {
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Codex не ответил на ${method}. Проверьте соединение.`));
-      }, this.timeout);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.write({ id, method, params }); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }

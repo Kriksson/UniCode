@@ -25,7 +25,7 @@ export class AttentionNotifications {
     }
     try {
       const notification = new Notification({
-        title: `UniCode v1 · ${title}`, body: compact(body),
+        title: `UniCode v2 · ${title}`, body: compact(body),
         icon: nativeImage.createFromPath(this.icon), silent: process.platform === 'linux', urgency: 'normal', timeoutType: 'never',
       });
       this.entries.set(key, { notification, threadId, questionIds });
@@ -106,7 +106,7 @@ export class AttentionNotifications {
     this.cancelSound?.();
     const players = [
       ['paplay', [this.sound]], ['pw-play', [this.sound]],
-      ['canberra-gtk-play', ['--file', this.sound, '--description', 'UniCode v1']],
+      ['canberra-gtk-play', ['--file', this.sound, '--description', 'UniCode v2']],
     ];
     const attempt = index => {
       if (!this.enabled) return;

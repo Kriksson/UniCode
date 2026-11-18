@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LoaderCircle, Smartphone } from 'lucide-react';
 import { closeMobileApi, installMobileApi } from './mobile-api';
-import appIcon from '../assets/unicode-generated.png';
+import appIcon from '../assets/icon-v2.svg';
 import './style.css';
 import './mobile.css';
 
@@ -38,7 +38,7 @@ function PhoneEntry() {
     return () => { window.removeEventListener('unicode-unpaired', unpaired); closeMobileApi(); };
   }, []);
   if (ready) return <Suspense fallback={<div className="mobile-pair-screen"><LoaderCircle className="spinning" size={25} /></div>}><MobileApp /></Suspense>;
-  return <div className="mobile-pair-screen"><img src={appIcon} width="64" height="64" alt="" /><h1>UniCode <span>v1</span></h1><small>by krkss</small>
+  return <div className="mobile-pair-screen"><img src={appIcon} width="64" height="64" alt="" /><h1>UniCode <span>v2</span></h1><small>by krkss</small>
     <div className="mobile-pair-card">{busy ? <><LoaderCircle className="spinning" size={23} /><p>{pairingSecret ? 'Подтверди подключение на компьютере' : 'Подключаемся…'}</p></> : <><Smartphone size={25} /><p>{error || 'Открой QR-код в UniCode на компьютере.'}</p><button className="primary-button" onClick={() => void connect()}>Повторить</button></>}</div>
   </div>;
 }

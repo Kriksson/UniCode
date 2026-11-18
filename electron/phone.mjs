@@ -6,7 +6,7 @@ import { dirname, join, extname, resolve, sep } from 'node:path';
 import selfsigned from 'selfsigned';
 import QRCode from 'qrcode';
 
-const allowedMethods = new Set(['bootstrap', 'list', 'history', 'send', 'steer', 'interrupt', 'answer', 'rate-limits', 'manage-chat', 'delete-chat', 'delete-from']);
+const allowedMethods = new Set(['bootstrap', 'list', 'history', 'send', 'steer', 'interrupt', 'answer', 'rate-limits', 'connections', 'connection-enabled', 'manage-chat', 'delete-chat', 'delete-from']);
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.woff2': 'font/woff2' };
 const digest = value => createHash('sha256').update(value).digest('hex');
 const cookieMaxAge = 400 * 24 * 60 * 60;
@@ -91,7 +91,7 @@ export class PhoneServer {
       const certificate = new X509Certificate(saved.cert);
       if (certificate.checkIP(host) && Date.parse(certificate.validTo) > Date.now() + 86400000) return saved;
     } catch { /* Missing, expired, or a new LAN address: create a local certificate. */ }
-    const saved = await selfsigned.generate([{ name: 'commonName', value: 'UniCode v1' }], {
+    const saved = await selfsigned.generate([{ name: 'commonName', value: 'UniCode v2' }], {
       keyType: 'ec', curve: 'P-256', algorithm: 'sha256',
       extensions: [
         { name: 'basicConstraints', cA: false, critical: true },
@@ -204,12 +204,12 @@ export class PhoneServer {
     response.end(JSON.stringify(value));
   }
 
-  async body(request) {
+  async body(request, maximum = 1024 * 1024) {
     if (request.headers['content-type']?.split(';')[0] !== 'application/json') throw failure(415, 'Неверный формат запроса');
     let length = 0; const chunks = [];
     for await (const chunk of request) {
       length += chunk.length;
-      if (length > 1024 * 1024) throw failure(413, 'Слишком большой запрос');
+      if (length > maximum) throw failure(413, 'Слишком большой запрос');
       chunks.push(chunk);
     }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw failure(400, 'Неверный запрос'); }
@@ -275,6 +275,15 @@ export class PhoneServer {
       const stream = { session, response }; this.streams.add(stream);
       response.on('close', () => this.streams.delete(stream)); return;
     }
+    if (url.pathname === '/attachment' && request.method === 'POST') {
+      const session = this.session(request);
+      this.remember(request, response);
+      const value = await this.body(request, 36 * 1024 * 1024);
+      if (this.session(request) !== session) throw failure(401, 'Подключение отключено.');
+      try { this.json(response, 200, { result: await this.invoke('upload-attachment', [value]) }); }
+      catch (error) { this.json(response, 400, { error: error.message || 'Не удалось прикрепить файл.' }); }
+      return;
+    }
     if (url.pathname === '/rpc' && request.method === 'POST') {
       const session = this.session(request);
       this.remember(request, response);
@@ -290,7 +299,7 @@ export class PhoneServer {
     if (request.method !== 'GET' && request.method !== 'HEAD') throw failure(405, 'Метод недоступен');
     let path;
     if (url.pathname === '/' || url.pathname === '/mobile.html') path = join(this.root, 'dist/mobile.html');
-    else if (url.pathname === '/app-icon.png') path = join(this.root, 'assets/icon.png');
+    else if (url.pathname === '/app-icon.png') path = join(this.root, 'assets/icon-v2.png');
     else if (/^\/(assets|fonts)\/[A-Za-z0-9_.\/-]+$/.test(url.pathname)) {
       path = resolve(this.root, 'dist', `.${url.pathname}`);
       if (!path.startsWith(resolve(this.root, 'dist') + sep)) throw failure(404, 'Не найдено');

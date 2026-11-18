@@ -1,0 +1,24 @@
+.surface-presence { display: contents; }
+.surface-presence[data-leaving] > .modal-backdrop { opacity: 0; pointer-events: none; transition-duration: 180ms; }
+.surface-presence[data-leaving] .modal,
+.surface-presence[data-leaving] .connections-modal,
+.surface-presence[data-leaving] .phone-modal,
+.surface-presence[data-leaving] .mobile-sheet,
+.surface-presence[data-leaving] .mobile-projects { opacity: 0; transform: scale(.96) translateY(8px); transition-duration: 180ms; }
+@media (prefers-reduced-motion: reduce) {
+  .surface-presence[data-leaving] .modal,
+  .surface-presence[data-leaving] .connections-modal,
+  .surface-presence[data-leaving] .phone-modal,
+  .surface-presence[data-leaving] .mobile-sheet,
+  .surface-presence[data-leaving] .mobile-projects { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-chat:is(:hover, :active):not(:disabled),
+  .send-button:is(:hover, :active):not(:disabled),
+  .primary-button:is(:hover, :active):not(:disabled),
+  .secondary-button:active:not(:disabled),
+  .icon-button:active:not(:disabled),
+  .run-menu-trigger:active:not(:disabled),
+  .mobile-shell .mobile-icon-button:is(:hover, :active) { transform: none; }
+}

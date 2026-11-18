@@ -1,9 +1,12 @@
 const PAGE_SIZE = 60;
-export const threadMetadata = thread => ({ ...thread, turns: [] });
-const itemFields = ['id', 'type', 'text', 'command', 'aggregatedOutput', 'status', 'exitCode', 'server', 'tool', 'changes', 'error', 'phase', 'commandActions', 'questions'];
+export const threadMetadata = thread => {
+  const preview = typeof thread.preview === 'string' ? thread.preview.replace(/\s*<unicode_auto>[\s\S]*?(?:<\/unicode_auto>|$)/g, '').split('<unicode_attachments>')[0].trim() : thread.preview;
+  return { ...thread, turns: [], ...(preview !== thread.preview ? { preview: preview || 'Прикреплённые файлы' } : {}) };
+};
+const itemFields = ['id', 'type', 'text', 'command', 'aggregatedOutput', 'status', 'exitCode', 'server', 'tool', 'changes', 'error', 'phase', 'commandActions', 'questions', 'senderThreadId', 'receiverThreadIds', 'receiverThreadId', 'newThreadId', 'prompt', 'model', 'reasoningEffort', 'agentsStates', 'agentStatus', 'kind', 'agentThreadId', 'agentPath'];
 export function uiItem(item) {
   const result = Object.fromEntries(itemFields.filter(key => item[key] !== undefined).map(key => [key, item[key]]));
-  if (item.type === 'userMessage') result.content = (item.content || []).filter(part => part.type === 'text').map(part => ({ type: 'text', text: part.text }));
+  if (item.type === 'userMessage') result.content = (item.content || []).filter(part => part.type === 'text' || part.type === 'localImage' || part.type === 'image').map(part => part.type === 'text' ? { type: 'text', text: part.text } : part.type === 'localImage' ? { type: 'localImage', path: part.path } : { type: 'image' });
   return result;
 }
 

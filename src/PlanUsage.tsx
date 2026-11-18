@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AccountLimits, RateLimitSnapshot, RateLimitWindow } from './types';
+import './PlanUsage.css';
 
 function mergeUpdate(previous: AccountLimits | null, patch: RateLimitSnapshot): AccountLimits {
   const id = patch.limitId || previous?.rateLimits?.limitId || 'codex';
@@ -13,13 +14,29 @@ function mergeUpdate(previous: AccountLimits | null, patch: RateLimitSnapshot): 
   };
 }
 
-const remaining = (window: RateLimitWindow) => Math.max(0, Math.min(100, Math.floor(100 - window.usedPercent)));
-const resetDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-const resetTime = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
+const remaining = (window: RateLimitWindow) => Math.max(0, Math.min(100, 100 - window.usedPercent));
+
+function formatCountdown(resetsAt: number, now: number): string {
+  const totalMinutes = Math.max(0, Math.ceil((resetsAt * 1000 - now) / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  return `${days > 0 ? `${days}d ` : ''}${hours}h ${minutes}m`;
+}
+
+function colorForRemaining(percent: number | null): string {
+  if (percent === null) return 'quota-bar--unknown';
+  if (percent < 20) return 'quota-bar--low';
+  if (percent < 50) return 'quota-bar--mid';
+  return 'quota-bar--high';
+}
 
 export function PlanUsage({ connected, authenticated }: { connected: boolean; authenticated: boolean }) {
   const [limits, setLimits] = useState<AccountLimits | null>(null);
+  const limitsRef = useRef<AccountLimits | null>(null);
   const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
+  limitsRef.current = limits;
 
   useEffect(() => {
     if (!connected || !authenticated) {
@@ -68,10 +85,20 @@ export function PlanUsage({ connected, authenticated }: { connected: boolean; au
     });
     const visible = () => { if (document.visibilityState === 'visible') void read(); };
     const timer = window.setInterval(visible, 60000);
+    const clock = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      const currentLimits = limitsRef.current;
+      const currentBucket = currentLimits?.rateLimitsByLimitId?.codex || currentLimits?.rateLimits;
+      const hasExpiredWindow = [currentBucket?.primary, currentBucket?.secondary].some(window =>
+        typeof window?.resetsAt === 'number' && Number.isFinite(window.resetsAt) && window.resetsAt * 1000 <= current,
+      );
+      if (hasExpiredWindow) void read();
+    }, 30000);
     window.addEventListener('focus', visible);
     document.addEventListener('visibilitychange', visible);
     return () => {
-      alive = false; unsubscribe(); window.clearInterval(timer);
+      alive = false; unsubscribe(); window.clearInterval(timer); window.clearInterval(clock);
       window.removeEventListener('focus', visible); document.removeEventListener('visibilitychange', visible);
     };
   }, [connected, authenticated]);
@@ -79,18 +106,32 @@ export function PlanUsage({ connected, authenticated }: { connected: boolean; au
   if (!connected || !authenticated) return null;
   const bucket = limits?.rateLimitsByLimitId?.codex || limits?.rateLimits;
   const windows = [bucket?.primary, bucket?.secondary];
-  return <div className="plan-usage" aria-label="Остаток лимитов плана">
-    {[{ label: '5ч', minutes: 300 }, { label: 'Неделя', minutes: 10080 }].map(({ label, minutes }) => {
+  return <div className="quota-usage" aria-label="Остаток лимитов плана">
+    {[{ label: '5 часов', minutes: 300 }, { label: 'Неделя', minutes: 10080 }].map(({ label, minutes }) => {
       const window = windows.find(value => value?.windowDurationMins === minutes);
       const percent = window && Number.isFinite(window.usedPercent) ? remaining(window) : null;
-      const date = typeof window?.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? new Date(window.resetsAt * 1000) : null;
-      const validDate = date && Number.isFinite(date.getTime()) ? date : null;
-      const sameDay = validDate?.toDateString() === new Date().toDateString();
-      const reset = validDate ? (minutes === 300 && sameDay ? resetTime : resetDate).format(validDate) : '—';
-      return <div className="plan-usage-row" key={minutes}>
-        <span className="plan-usage-period">{label}</span>
-        <span className={`plan-usage-percent ${percent !== null && percent <= 10 ? 'low' : ''}`}>{percent ?? (loading ? '…' : '—')}{percent !== null ? '%' : ''} <span>/ 100%</span></span>
-        <time className="plan-usage-reset" dateTime={validDate?.toISOString()} aria-label={`Сброс: ${reset}`}>{reset}</time>
+      const resetsAt = typeof window?.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? window.resetsAt : null;
+      const resetDate = resetsAt === null ? null : new Date(resetsAt * 1000);
+      const validDate = resetDate && Number.isFinite(resetDate.getTime()) ? resetDate : null;
+      const countdown = resetsAt !== null && validDate ? formatCountdown(resetsAt, now) : loading ? '…' : '—';
+      const fill = percent === null ? 0 : percent / 100;
+      return <div className="quota-row" key={minutes}>
+        <div
+          className={`quota-bar ${colorForRemaining(percent)}${loading && percent === null ? ' quota-bar--loading' : ''}`}
+          role="progressbar"
+          aria-label={`Остаток лимита: ${label}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent === null ? undefined : Math.round(percent)}
+          aria-valuetext={percent === null ? (loading ? 'Загрузка' : 'Нет данных') : `${Math.round(percent)}% доступно`}
+        >
+          <span className="quota-bar__track" aria-hidden="true">
+            <span className="quota-bar__fill" style={{ transform: `scaleX(${fill})` }} />
+          </span>
+        </div>
+        <time className="quota-countdown" dateTime={validDate?.toISOString()} aria-label={`До сброса лимита «${label}»: ${countdown}`}>
+          {countdown}
+        </time>
       </div>;
     })}
   </div>;

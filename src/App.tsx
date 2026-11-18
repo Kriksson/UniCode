@@ -1,11 +1,17 @@
+import { Presence } from './Presence';
+import { useAgents, AgentBranches, AgentProgress, AgentParent, agentFinished } from './Agents';
+import { Connections } from './Connections';
+import { McpElicitation } from './McpElicitation';
+import { useAttachments, AttachmentButton, AttachmentStrip, attachmentMessage, MessageFiles } from './Attachments';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowUp, Check, ChevronDown, ChevronRight, Code2, Copy, Folder, FolderOpen, FolderPlus, LoaderCircle, MessageSquare, Minus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, ShieldCheck, Square, SquarePen, Trash2, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, FolderPlus, LoaderCircle, MessageSquare, Minus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, ShieldCheck, Square, SquarePen, Trash2, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Chat, Event as CodexEvent, Item, Meta, Model, Runtime, ServerRequest, State, Thread } from './types';
-import appIcon from '../assets/unicode-generated.png';
+import appIcon from '../assets/icon-v2.svg';
 import { questionReplies, messageLinkUrl, liveActivity } from './presentation';
 import { RunOptions } from './RunOptions';
+import { autoEffort, resolveAutoModels } from './auto-models';
 import { ChatHistory } from './ChatHistory';
 import { PlanUsage } from './PlanUsage';
 import { PhoneConnect } from './PhoneConnect';
@@ -15,7 +21,6 @@ const api = window.codex;
 const initial: State = { version: 1, folders: [], chats: {}, hidden: [], selectedId: null, cwd: null, model: '' };
 const blankRuntime = (): Runtime => ({ items: [], busy: false });
 const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error);
-const basename = (path?: string | null) => path?.replace(/\/$/, '').split('/').pop() || 'Папка проекта';
 const timestamp = () => Math.floor(Date.now() / 1000);
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -34,6 +39,8 @@ function useLiveCallback<A extends unknown[], R>(callback: (...args: A) => R) {
 type Dialog = { kind: 'folder' | 'rename' | 'folder-rename'; id?: string; value: string } | { kind: 'hide' | 'folder-delete' | 'chat-delete'; id: string; value: string } | { kind: 'messages-delete'; id: string; turnId: string; value: string };
 
 export function App() {
+  const { agents, seed: seedAgents } = useAgents();
+  const agentIds = useRef(new Set<string>()); agentIds.current = new Set(agents.map(agent => agent.id));
   const [state, setState] = useState<State>(initial);
   const [threads, setThreads] = useState<Record<string, Thread>>({});
   const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
@@ -96,6 +103,7 @@ export function App() {
     setBooting(true); setError('');
     try {
       const result = await api.bootstrap();
+      seedAgents(result.agents);
       setState({ ...result.state, cwd: result.state.cwd || result.home });
       setDrafts(result.state.drafts || {});
       setThreads(Object.fromEntries(result.threads.data.map(thread => [thread.id, thread])));
@@ -176,6 +184,7 @@ export function App() {
     if (method === 'account/updated') setAuthenticated(!!p.authMode);
     if (method === 'serverRequest/resolved') setRequests(all => all.filter(r => r.id !== p.requestId));
     if (!id) return;
+    if (agentIds.current.has(id) && id !== activeThread.current && method.startsWith('item/')) return;
     if (method === 'thread/deleted') { removeChat(id); return; }
     if (method === 'turn/started') updateRuntime(id, value => ({ ...value, turnId: p.turn.id, busy: true, error: undefined, activity: 'Готовит ответ' }));
     if (method === 'turn/completed') {
@@ -214,40 +223,50 @@ export function App() {
   }, [updateRuntime, removeChat]);
 
   const chats = useMemo<Chat[]>(() => {
-    const ids = new Set([...Object.keys(threads), ...Object.keys(state.chats)]);
+    const ids = new Set([...Object.keys(threads), ...Object.keys(state.chats), ...agents.filter(agent => !agent.deleted).flatMap(agent => [agent.id, agent.parentId])]);
     return [...ids].filter(id => !state.hidden.includes(id) && !deletedIds.current.has(id)).map(id => {
+      const agent = agents.find(agent => agent.id === id);
       const thread = threads[id] as Thread | undefined; const meta = state.chats[id] || {};
-      return { ...thread, ...meta, id, cwd: meta.cwd || thread?.cwd || state.cwd || '',
+      return { ...thread, ...meta, id, cwd: meta.cwd || thread?.cwd || agent?.cwd || state.cwd || '',
+        model: meta.model || thread?.model || agent?.model,
         createdAt: meta.createdAt ?? thread?.createdAt ?? 0, updatedAt: meta.updatedAt ?? thread?.updatedAt ?? 0,
-        title: meta.name || thread?.name || thread?.preview?.replace(/\s+/g, ' ').slice(0, 80) || 'Новый чат',
+        title: meta.name || thread?.name || agent?.name || thread?.preview?.replace(/\s+/g, ' ').slice(0, 80) || 'Новый чат',
       };
     }).sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [state.chats, state.hidden, state.cwd, threads]);
+  }, [state.chats, state.hidden, state.cwd, threads, agents]);
   const selected = chats.find(chat => chat.id === state.selectedId);
   const activeId = selected?.id || '';
   activeThread.current = activeId;
-  const active = runtime[activeId] || blankRuntime();
+  const selectedAgent = agents.find(agent => agent.id === activeId);
+  const storedActive = runtime[activeId] || blankRuntime();
+  const active = selectedAgent && !agentFinished(selectedAgent) ? { ...storedActive, busy: true, activity: selectedAgent.activity } : storedActive;
   const currentFolder = state.folders.find(folder => folder.id === selected?.folderId);
-  const pinned = chats.filter(chat => chat.pinned);
-  const filtered = chats.filter(chat => {
+  const rootChats = chats.filter(chat => !agentIds.current.has(chat.id));
+  const pinned = rootChats.filter(chat => chat.pinned);
+  const filtered = rootChats.filter(chat => {
     const matchesView = view === 'all' || (view === 'pinned' ? chat.pinned : chat.folderId === view);
     return matchesView && (!query || chat.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   });
   const shownRecent = filtered.filter(chat => query || !chat.pinned);
   const textKey = activeId || `empty:${view}`;
   const draft = drafts[textKey] || '';
+  const attachment = useAttachments(textKey, !ready || !authenticated || !connected, setError);
   const workingDir = selected?.cwd || state.cwd || '';
   const activeRequests = requests.filter(request => request.params.threadId === activeId);
   const answeredQuestions = useMemo(() => new Set(active.answeredQuestionIds || []), [active.answeredQuestionIds]);
   const selectedModel = selected?.model ?? state.model;
   const selectedEffort = selected ? selected.effort || '' : state.effort || '';
+  const selectedServiceTier = (selected ? selected.serviceTier : state.serviceTier) || 'default';
   const selectedAccess = selected ? selected.access || 'workspace-write' : state.access || 'workspace-write';
-  const modelInfo = selectedModel ? models.find(model => model.model === selectedModel) : models.find(model => model.model === defaults.model) || models.find(model => model.isDefault);
-  const defaultEffort = (!selectedModel ? defaults.effort : '') || modelInfo?.defaultReasoningEffort || '';
+  const selectedAutoCoordinator = (selected ? selected.autoCoordinator : state.autoCoordinator) || '';
+  const selectedAutoWorker = (selected ? selected.autoWorker : state.autoWorker) || '';
+  const autoModels = resolveAutoModels(models, selectedAutoCoordinator, selectedAutoWorker);
+  const modelInfo = selectedModel === 'auto' ? autoModels.coordinator : selectedModel ? models.find(model => model.model === selectedModel) : models.find(model => model.model === defaults.model) || models.find(model => model.isDefault);
+  const defaultEffort = (selectedModel === 'auto' ? autoEffort(modelInfo) : !selectedModel ? defaults.effort : '') || modelInfo?.defaultReasoningEffort || '';
 
-  function changeSettings(patch: Pick<Partial<State>, 'model' | 'effort' | 'access'>) {
+  function changeSettings(patch: Pick<Partial<State>, 'model' | 'effort' | 'access' | 'serviceTier' | 'autoCoordinator' | 'autoWorker'>) {
     setState(value => ({ ...value, ...patch, chats: activeId ? { ...value.chats, [activeId]: {
-      ...value.chats[activeId], model: selectedModel, effort: selectedEffort, access: selectedAccess, ...patch,
+      ...value.chats[activeId], model: selectedModel, effort: selectedEffort, access: selectedAccess, serviceTier: selectedServiceTier, autoCoordinator: selectedAutoCoordinator, autoWorker: selectedAutoWorker, ...patch,
     } } : value.chats }));
   }
 
@@ -259,7 +278,7 @@ export function App() {
       const previous = chats[value.selectedId || ''];
       if (previous?.draft && !runtimeRef.current[value.selectedId || '']?.items.length && !drafts[value.selectedId || '']) delete chats[value.selectedId!];
       chats[id] = { draft: true, folderId: folderId ?? (view !== 'all' && view !== 'pinned' ? view : null),
-        cwd: value.cwd || undefined, createdAt: timestamp(), updatedAt: timestamp(), model: value.model, effort: value.effort || '', access: 'workspace-write' };
+        cwd: value.cwd || undefined, createdAt: timestamp(), updatedAt: timestamp(), model: value.model, effort: value.effort || '', autoCoordinator: value.autoCoordinator, autoWorker: value.autoWorker, serviceTier: value.serviceTier || 'default', access: 'workspace-write' };
       return { ...value, chats, selectedId: id };
     });
     setScrollSignal(value => value + 1);
@@ -356,8 +375,10 @@ export function App() {
 
   async function send(overrideText?: string, allowSteer = false): Promise<boolean> {
     const text = (overrideText ?? draft).trim();
-    if (!text || (active.busy && !allowSteer) || historyBusy === activeId || !connected || !authenticated || sending.current.has(textKey)) return false;
-    if (active.busy) {
+    const attached = overrideText === undefined ? attachment.items : [];
+    const attachmentIds = attached.map(file => file.id);
+    if ((!text && !attached.length) || attachment.uploading || historyBusy === activeId || !connected || !authenticated || sending.current.has(textKey)) return false;
+    if (active.busy && allowSteer) {
       if (!active.turnId) { setError('Дождитесь начала ответа Codex'); return false; }
       const pendingId = 'pending-' + crypto.randomUUID();
       sending.current.add(textKey);
@@ -376,40 +397,34 @@ export function App() {
       id = 'draft-' + crypto.randomUUID();
       setState(value => ({ ...value, selectedId: id, chats: { ...value.chats, [id]: {
         draft: true, cwd: workingDir, folderId: view !== 'all' && view !== 'pinned' ? view : null,
-        createdAt: timestamp(), updatedAt: timestamp(), name: text.replace(/\s+/g, ' ').slice(0, 60),
-        model: selectedModel, effort: selectedEffort, access: selectedAccess,
+        createdAt: timestamp(), updatedAt: timestamp(), name: text.replace(/\s+/g, ' ').slice(0, 60) || attached[0]?.name,
+        model: selectedModel, effort: selectedEffort, access: selectedAccess, serviceTier: selectedServiceTier, autoCoordinator: selectedAutoCoordinator, autoWorker: selectedAutoWorker,
       } } }));
     } else if (selected?.draft && !selected.name) {
-      setState(value => ({ ...value, chats: { ...value.chats, [id]: { ...value.chats[id], name: text.replace(/\s+/g, ' ').slice(0, 60) } } }));
+      setState(value => ({ ...value, chats: { ...value.chats, [id]: { ...value.chats[id], name: text.replace(/\s+/g, ' ').slice(0, 60) || attached[0]?.name } } }));
     }
-    if (activeId) patchMeta(id, { model: selectedModel, effort: selectedEffort, access: selectedAccess });
+    attachment.move(textKey, id);
+    if (activeId) patchMeta(id, { model: selectedModel, effort: selectedEffort, access: selectedAccess, serviceTier: selectedServiceTier, autoCoordinator: selectedAutoCoordinator, autoWorker: selectedAutoWorker });
     if (overrideText === undefined) setDrafts(value => ({ ...value, [textKey]: '' }));
     updateRuntime(id, value => ({ ...value, busy: true, error: undefined, loaded: true,
-      items: [...value.items, { id: 'pending-' + crypto.randomUUID(), type: 'userMessage', content: [{ type: 'text', text }] }],
+      items: [...value.items, { id: 'pending-' + crypto.randomUUID(), type: 'userMessage', content: [{ type: 'text', text }], attachments: attached }],
     }));
     setScrollSignal(value => value + 1);
     try {
-      const result = await api.send({ id: selected && !selected.draft ? id : undefined, localId: id, text, cwd: workingDir, model: selectedModel || defaults.model || modelInfo?.model || '', effort: selectedEffort || defaultEffort, access: selectedAccess });
+      const result = await api.send({ id: selected && !selected.draft ? id : undefined, localId: id, text, attachments: attachmentIds, interruptActive: true, serviceTier: selectedServiceTier, autoCoordinator: selectedAutoCoordinator, autoWorker: selectedAutoWorker, cwd: workingDir, model: selectedModel || defaults.model || modelInfo?.model || '', effort: selectedEffort || defaultEffort, access: selectedAccess });
+      attachment.sent(attachmentIds);
       updateRuntime(result.thread.id, value => ({ ...value, turnId: value.busy ? result.turn.id : undefined,
         answeredQuestionIds: collectAnswers(value.answeredQuestionIds, [{ id: '', type: 'userMessage', content: [{ type: 'text', text }] }]),
       }));
       return true;
     } catch (error) {
       const canonicalId = aliases.current.get(id) || id;
-      updateRuntime(canonicalId, value => ({ ...value, busy: false, error: errorText(error),
+      updateRuntime(canonicalId, value => ({ ...value, busy: active.busy && value.busy, error: errorText(error),
         items: value.items.filter(item => !item.id.startsWith('pending-')),
       }));
-      if (overrideText === undefined) setDrafts(value => ({ ...value, [canonicalId]: text }));
+      if (overrideText === undefined) setDrafts(value => ({ ...value, [canonicalId]: value[canonicalId] ? `${text}\n\n${value[canonicalId]}` : text }));
       return false;
     } finally { sending.current.delete(textKey); composer.current?.focus(); }
-  }
-
-  async function chooseDirectory() {
-    try {
-      const cwd = await api.chooseFolder();
-      if (!cwd) return;
-      setState(value => ({ ...value, cwd, chats: activeId ? { ...value.chats, [activeId]: { ...value.chats[activeId], cwd } } : value.chats }));
-    } catch (error) { setError(errorText(error)); }
   }
 
   const patchMeta = (id: string, patch: Partial<Meta>) => setState(value => ({ ...value, chats: { ...value.chats, [id]: { ...value.chats[id], ...patch } } }));
@@ -476,7 +491,7 @@ export function App() {
   function chatRow(chat: Chat) {
     const running = runtime[chat.id]?.busy;
     const needsInput = requests.some(request => request.params.threadId === chat.id);
-    return <div key={chat.id} className={`chat-row ${activeId === chat.id ? 'active' : ''}`} draggable={!running}
+    return <div key={chat.id} className="chat-tree"><div className={`chat-row ${activeId === chat.id ? 'active' : ''}`} draggable={!running}
       onDragStart={event => event.dataTransfer.setData('text/codex-chat', chat.id)}>
       <button className="chat-select" onClick={() => selectChat(chat.id)} title={chat.title}>
         {needsInput ? <span className="attention-dot" /> : running ? <LoaderCircle size={14} className="spinning" /> : <MessageSquare size={15} />}
@@ -486,8 +501,15 @@ export function App() {
         const rect = document.querySelector(`[data-menu-id="${chat.id}"]`)?.getBoundingClientRect();
         setMenu({ id: chat.id, x: rect?.right || 250, y: Math.min(rect?.bottom || 200, window.innerHeight - 330) });
       }}><span data-menu-id={chat.id}><MoreHorizontal size={16} /></span></IconButton>
-    </div>;
+    </div><AgentBranches agents={agents} parentId={chat.id} selectedId={activeId} onSelect={selectChat} /></div>;
   }
+
+  const previousAgent = useRef<{ id: string; active: boolean } | null>(null);
+  useEffect(() => {
+    const before = previousAgent.current;
+    if (selectedAgent && agentFinished(selectedAgent) && before?.id === selectedAgent.id && before.active) selectChat(selectedAgent.parentId);
+    previousAgent.current = selectedAgent ? { id: selectedAgent.id, active: !agentFinished(selectedAgent) } : null;
+  }, [activeId, selectedAgent?.status]);
 
   const menuChat = chats.find(chat => chat.id === menu?.id);
   const visibleFolder = state.folders.find(folder => folder.id === view);
@@ -502,13 +524,13 @@ export function App() {
 
   return <div className={`app ${sidebar ? '' : 'sidebar-hidden'}`}>
     <aside className="sidebar" aria-label="Навигация по чатам">
-      <div className="sidebar-brand drag-region"><Brand /><div className="brand-lockup"><span className="brand-title">UniCode<span className="brand-version">v1</span></span><span className="brand-credit">by krkss</span></div>
+      <div className="sidebar-brand drag-region"><Brand /><div className="brand-lockup"><span className="brand-title">UniCode<span className="brand-version">v2</span></span><span className="brand-credit">by krkss</span></div>
         <IconButton label="Скрыть боковую панель" onClick={() => setSidebar(false)}><PanelLeftClose size={17} /></IconButton>
       </div>
       <div className="sidebar-top">
-        <button className="new-chat" aria-label="Новый чат" onClick={() => newChat()} disabled={!ready}><SquarePen size={17} /><span>Новый чат</span><kbd>Ctrl N</kbd></button>
+        <button className="new-chat" aria-label="Новый чат" onClick={() => newChat()} disabled={!ready}><SquarePen size={17} /><span>Новый чат</span><Plus size={15} className="new-chat-plus" /></button>
         <label className="search-field"><Search size={16} /><input id="chat-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Найти чат" aria-label="Найти чат" /><kbd>⌃ K</kbd></label>
-        <button className={`nav-row ${view === 'all' ? 'selected' : ''}`} onClick={() => chooseView('all')}><MessageSquare size={17} /><span>Все чаты</span><span className="count">{chats.length}</span></button>
+        <button className={`nav-row ${view === 'all' ? 'selected' : ''}`} onClick={() => chooseView('all')}><MessageSquare size={17} /><span>Чаты</span><span className="count">{rootChats.length}</span></button>
       </div>
       <div className="sidebar-scroll">
         {pinned.length > 0 && !query && <section className="sidebar-section">
@@ -530,7 +552,7 @@ export function App() {
         {(shownRecent.length > 0 || filtered.length === 0 || (cursor && view === 'all')) && <section className="sidebar-section recent-section">
           <div className="section-label"><span>{query ? 'Результаты поиска' : visibleFolder?.name || 'Недавние'}</span>{visibleFolder && <IconButton label="Новый чат в папке" onClick={() => newChat(view)}><Plus size={15} /></IconButton>}</div>
           {shownRecent.map(chatRow)}
-          {!shownRecent.length && <div className="sidebar-empty">{query ? 'Чаты не найдены' : visibleFolder ? 'В этой папке пока пусто' : 'Здесь появятся ваши чаты'}</div>}
+          {!shownRecent.length && <div className="sidebar-empty">{query ? 'Чаты не найдены' : visibleFolder ? 'В этой папке пока пусто' : 'Пока пусто'}</div>}
           {cursor && !query && view === 'all' && <button className="load-more" disabled={loadingMore} onClick={async () => {
             setLoadingMore(true);
             try { const result = await api.list(cursor); setThreads(all => ({ ...all, ...Object.fromEntries(result.data.map(thread => [thread.id, thread])) })); setCursor(result.nextCursor); }
@@ -538,26 +560,30 @@ export function App() {
           }}>{loadingMore ? <LoaderCircle size={13} className="spinning" /> : <ChevronDown size={13} />}Более ранние чаты</button>}
         </section>}
       </div>
-      <div className="sidebar-bottom"><span className={`connection-dot ${connected ? 'online' : ''}`} /><span>{booting ? 'Подключение…' : connected ? 'Агент активен' : 'Нет соединения'}</span><PlanUsage connected={connected} authenticated={authenticated} />{!connected && !booting && <button onClick={bootstrap}>Повторить</button>}</div>
+      <div className="sidebar-bottom"><PlanUsage connected={connected} authenticated={authenticated} />{!connected && !booting && <button onClick={bootstrap}>Нет соединения · Повторить</button>}</div>
     </aside>
 
-    <main className="main">
+    <main className="main attachment-drop-zone" {...attachment.dropProps}>
+      {attachment.dragging && <div className="attachment-drop-overlay">Отпусти файлы, чтобы прикрепить</div>}
       <header className="topbar drag-region">
         {!sidebar && <IconButton label="Показать боковую панель" onClick={() => setSidebar(true)}><PanelLeftOpen size={18} /></IconButton>}
         <div className="breadcrumb">{currentFolder || emptyFolder ? <><Folder size={14} /><span>{currentFolder?.name || visibleFolder?.name}</span><span className="breadcrumb-slash">/</span></> : null}<span className="chat-heading">{selected?.title || 'Новый чат'}</span></div>
         <div className="topbar-actions">
+          <Connections disabled={!connected || !authenticated} onNewChat={() => newChat()} />
           <PhoneConnect />
           {selected && <><IconButton label={selected.pinned ? 'Открепить чат' : 'Закрепить чат'} className={selected.pinned ? 'is-pinned' : ''} onClick={() => patchMeta(selected.id, { pinned: !selected.pinned })}><Pin size={16} /></IconButton><IconButton label="Действия чата" onClick={() => setMenu({ id: activeId, x: window.innerWidth - 135, y: 52 })}><MoreHorizontal size={19} /></IconButton><span className="topbar-divider" /></>}
           <div className="window-controls"><IconButton label="Свернуть" onClick={() => void api.window('minimize')}><Minus size={14} /></IconButton><IconButton label="Развернуть" onClick={() => void api.window('maximize')}><Square size={11} /></IconButton><IconButton label="Закрыть" className="close-window" onClick={() => void api.window('close')}><X size={15} /></IconButton></div>
         </div>
       </header>
 
+      <AgentParent agent={agents.find(agent => agent.id === activeId)} onSelect={selectChat} />
+      <AgentProgress key={activeId} agents={agents} parentId={activeId} onSelect={selectChat} />
       {error && <div className="error-banner" role="alert"><span>{error}</span><div>{!connected && <button onClick={bootstrap} disabled={booting}>Подключиться</button>}<IconButton label="Закрыть уведомление" onClick={() => setError('')}><X size={15} /></IconButton></div></div>}
-      {!authenticated && connected && <div className="login-banner"><span>Войдите в аккаунт, чтобы начать переписку.</span><button onClick={() => void api.login().catch(error => setError(errorText(error)))}>Войти через ChatGPT</button></div>}
+      {!authenticated && connected && <div className="login-banner"><span>Требуется вход</span><button onClick={() => void api.login().catch(error => setError(errorText(error)))}>Войти через ChatGPT</button></div>}
 
       <div className={`conversation ${empty ? 'is-empty' : 'with-history'}`}>
-        {booting && !ready ? <div className="loading-state"><LoaderCircle className="spinning" size={22} /><span>Подключаем Codex…</span></div> : historyBusy === activeId && !active.items.length ? <div className="loading-state"><LoaderCircle className="spinning" size={22} /><span>Загружаем переписку…</span></div> : empty ?
-          <div className="welcome"><div className="welcome-symbol"><Code2 size={34} strokeWidth={1.8} /></div><h1>{emptyFolder ? visibleFolder?.name : 'С чего начнём?'}</h1><p>Выберите проект и напишите, что нужно сделать.</p></div> :
+        {booting && !ready ? <div className="loading-state"><LoaderCircle className="spinning" size={22} /><span>Подключение…</span></div> : historyBusy === activeId && !active.items.length ? <div className="loading-state"><LoaderCircle className="spinning" size={22} /><span>Загрузка…</span></div> : empty ?
+          <div className="welcome"><div className="welcome-symbol"><Brand /></div><h1>{emptyFolder ? visibleFolder?.name : 'С чего начнём?'}</h1></div> :
           <ChatHistory key={`${activeId}:${active.historyVersion || 0}`} runtime={active} onLoadOlder={loadEarlier} scrollSignal={scrollSignal}
             renderItem={item => <Message item={item} copied={copied} copy={copy} cwd={workingDir} onError={setError} answeredQuestions={answeredQuestions} onAnswer={answerQuestion}
               questionDrafts={questionDrafts.current} canDelete={!active.busy && historyBusy !== activeId && selected?.historyMode !== 'legacy'} onDelete={deleteMessage} />}
@@ -568,18 +594,18 @@ export function App() {
       <div className="composer-area">
         {activeRequests.map(request => <Approval key={request.id} request={request} onError={setError} items={active.items} />)}
         <div className={`composer ${active.busy ? 'is-working' : ''}`}>
-          <textarea ref={composer} aria-label="Сообщение Codex" placeholder="Напишите Codex…" value={draft} rows={1} maxLength={250000}
+          <AttachmentStrip items={attachment.items} remove={attachment.remove} disabled={attachment.uploading} />
+          <textarea ref={composer} aria-label="Сообщение Codex" placeholder="Что нужно сделать?" value={draft} rows={1} maxLength={250000}
             onChange={event => setDrafts(value => ({ ...value, [textKey]: event.target.value }))}
             onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }}
             disabled={!ready || !authenticated} />
           <div className="composer-toolbar"><div className="composer-options">
-            <button className="project-button" title={workingDir || 'Выбрать папку проекта'} onClick={chooseDirectory} disabled={active.busy || !ready}><Folder size={15} /><span>{workingDir ? basename(workingDir) : 'Выбрать проект'}</span><ChevronDown size={12} /></button>
-            <span className="composer-divider" />
-            <RunOptions key={activeId} models={models} model={selectedModel} effort={selectedEffort} access={selectedAccess} defaults={defaults} disabled={active.busy || !ready} onChange={changeSettings} />
+            <AttachmentButton add={attachment.add} uploading={attachment.uploading} disabled={!ready || !authenticated || !connected} />
+            <RunOptions key={activeId} models={models} model={selectedModel} autoCoordinator={selectedAutoCoordinator} autoWorker={selectedAutoWorker} effort={selectedEffort} access={selectedAccess} serviceTier={selectedServiceTier} defaults={defaults} disabled={!ready || !authenticated || !connected} onChange={changeSettings} />
           </div>
-            {active.busy ? <button className="send-button stop" aria-label="Остановить ответ" title="Остановить ответ" disabled={!active.turnId} onClick={() => {
+            {active.busy && !draft.trim() && !attachment.items.length ? <button className="send-button stop" aria-label="Остановить ответ" title="Остановить ответ" disabled={!active.turnId} onClick={() => {
               if (active.turnId) void api.interrupt({ id: activeId, turnId: active.turnId }).catch(error => setError(errorText(error)));
-            }}><Square size={13} fill="currentColor" /></button> : <button className="send-button" aria-label="Отправить сообщение" title="Отправить сообщение" disabled={!draft.trim() || historyBusy === activeId || !connected || !authenticated || !ready} onClick={() => void send()}><ArrowUp size={19} strokeWidth={2.2} /></button>}
+            }}><Square size={13} fill="currentColor" /></button> : <button className="send-button" aria-label="Отправить сообщение" title="Отправить сообщение" disabled={(!draft.trim() && !attachment.items.length) || attachment.uploading || historyBusy === activeId || !connected || !authenticated || !ready} onClick={() => void send()}><ArrowUp size={19} strokeWidth={2.2} /></button>}
           </div>
         </div>
       </div>
@@ -595,12 +621,12 @@ export function App() {
       <button className="danger" disabled={runtime[menu.id]?.busy} onClick={() => { setDialog({ kind: 'chat-delete', id: menu.id, value: menuChat.title }); setMenu(null); }}><Trash2 size={15} />Удалить чат навсегда</button>
     </div></>}
 
-    {dialog && <div className="modal-backdrop" onMouseDown={event => { if (!dialogBusy && event.target === event.currentTarget) setDialog(null); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onSubmit={saveDialog}>
+    <Presence show={!!dialog}>{dialog && <div className="modal-backdrop" onMouseDown={event => { if (!dialogBusy && event.target === event.currentTarget) setDialog(null); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onSubmit={saveDialog}>
       <div className="modal-icon">{dialog.kind.includes('folder') ? <Folder size={23} /> : dialog.kind === 'hide' ? <MessageSquare size={23} /> : <Pencil size={23} />}</div>
       <h2 id="dialog-title">{dialog.kind === 'folder' ? 'Новая папка' : dialog.kind === 'folder-delete' ? 'Удалить папку?' : dialog.kind === 'chat-delete' ? 'Удалить чат навсегда?' : dialog.kind === 'messages-delete' ? 'Удалить переписку отсюда?' : dialog.kind === 'hide' ? 'Убрать чат из списка?' : 'Переименовать'}</h2>
       {['hide', 'folder-delete', 'chat-delete', 'messages-delete'].includes(dialog.kind) ? <p>{dialog.kind === 'folder-delete' ? 'Чаты останутся в общем списке. Удалится только папка.' : dialog.kind === 'chat-delete' ? `Чат «${dialog.value}» и его дочерние диалоги будут удалены из Codex CLI. Восстановить переписку не получится. Файлы проекта останутся на месте.` : dialog.kind === 'messages-delete' ? 'Будут удалены весь выбранный ход (ваш вопрос и ответы Codex), а также все последующие сообщения. История изменится и для Codex. Изменения файлов проекта не отменяются.' : 'Переписка сохранится в Codex CLI. Она будет скрыта только в этом приложении.'}</p> : <><label htmlFor="dialog-input">{dialog.kind === 'rename' ? 'Название чата' : 'Название папки'}</label><input id="dialog-input" autoFocus maxLength={dialog.kind === 'rename' ? 120 : 80} placeholder="Например, Работа" value={dialog.value} onChange={event => setDialog({ ...dialog, value: event.target.value })} onFocus={event => event.target.select()} /></>}
       <div className="modal-actions"><button type="button" className="secondary-button" disabled={dialogBusy} onClick={() => setDialog(null)}>Отмена</button><button type="submit" className="primary-button" disabled={dialogBusy || !dialog.value.trim()}>{dialogBusy ? 'Удаляем…' : dialog.kind === 'folder' ? 'Создать папку' : dialog.kind === 'hide' ? 'Убрать из списка' : dialog.kind === 'folder-delete' ? 'Удалить папку' : dialog.kind === 'chat-delete' ? 'Удалить навсегда' : dialog.kind === 'messages-delete' ? 'Удалить переписку' : 'Сохранить'}</button></div>
-    </form></div>}
+    </form></div>}</Presence>
   </div>;
 }
 
@@ -608,11 +634,16 @@ export const Message = memo(function Message({ item, copied, copy, cwd, onError,
   const canDelete = allowDelete && !!item.turnId;
   if (item.type === 'userMessage') {
     const text = (item.content || []).filter(value => value.type === 'text').map(value => value.text).join('\n');
-    const replies = questionReplies(text);
-    return <article className="message user-message"><div className="message-author">{replies ? 'Вы ответили' : 'Вы'}</div><div className="user-bubble">{replies ? <dl className="question-replies">{replies.map((reply, index) => <div key={index}><dt>{reply.question}</dt><dd>{reply.answer}</dd></div>)}</dl> : text}</div>{canDelete && <div className="message-actions user-actions"><IconButton label="Удалить с этого сообщения" onClick={() => onDelete(item)}><Trash2 size={14} /></IconButton></div>}</article>;
+    const display = attachmentMessage(text);
+    const files = display.files.length ? display.files : item.attachments?.map(file => ({ name: file.name, image: file.image })) || (item.content || []).filter(part => part.type === 'localImage' || part.type === 'image').map(part => ({ name: part.path?.split('/').pop() || 'Изображение', path: part.path, image: true }));
+    const replies = questionReplies(display.text);
+    return <article className="message user-message"><div className="message-author">{replies ? 'Вы ответили' : 'Вы'}</div>{(display.text || replies) && <div className="user-bubble">{replies ? <dl className="question-replies">{replies.map((reply, index) => <div key={index}><dt>{reply.question}</dt><dd>{reply.answer}</dd></div>)}</dl> : display.text}</div>}<MessageFiles files={files} onError={onError} cwd={cwd} />{canDelete && <div className="message-actions user-actions"><IconButton label="Удалить с этого сообщения" onClick={() => onDelete(item)}><Trash2 size={14} /></IconButton></div>}</article>;
   }
+  if (item.type === 'subAgentActivity') return <div className="agent-history-activity">Субагент · {item.agentPath || 'Агент'} · {({ started: 'запущен', interacted: 'работает', interrupted: 'остановлен', completed: 'завершил работу' } as Record<string, string>)[item.kind || ''] || item.kind}{item.model ? ` · ${item.model}` : ''}</div>;
+  if (item.type === 'collabAgentToolCall' || item.type === 'collabToolCall') return <details className="tool-call agent-history-call"><summary><span>Субагенты · {({ spawnAgent: 'Назначает задачу', sendInput: 'Передаёт указания', followupTask: 'Новая задача', wait: 'Ожидает результаты', closeAgent: 'Закрывает агента', resumeAgent: 'Возобновляет работу', sendMessage: 'Передаёт сообщение', listAgents: 'Проверяет агентов' } as Record<string, string>)[item.tool || ''] || item.tool}</span></summary><div className="tool-output">{item.model && <strong>{item.model}</strong>}{item.prompt && <p>{item.prompt}</p>}{Object.entries(item.agentsStates || {}).map(([id, state]) => <p key={id}>{state.status}{state.message ? ` · ${state.message}` : ''}</p>)}</div></details>;
   if (item.type === 'agentMessage' || item.type === 'plan') {
-    if (!item.text && !item.questions?.length) return null;
+    const visibleText = item.text?.replace(/<!--\s*unicode:tasks[\s\S]*?(?:-->|$)/g, '').trim();
+    if (!visibleText && !item.questions?.length) return null;
     return <article className={`message agent-message ${item.phase === 'commentary' ? 'commentary-message' : ''}`}><div className="message-author"><Brand small /><span>Codex</span>{item.type === 'plan' && <span className="message-tag">План</span>}</div>
       <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} urlTransform={messageLinkUrl} components={{
         a: ({ href, children }) => href ? <a href={href} title={href} onClick={event => { event.preventDefault(); void api.openLink({ href, cwd }).catch(error => onError(errorText(error))); }}>{children}</a> : <span>{children}</span>,
@@ -620,9 +651,9 @@ export const Message = memo(function Message({ item, copied, copy, cwd, onError,
         pre: ({ children }) => <div className="code-block"><pre>{children}</pre><button className="copy-code" aria-label="Скопировать код" onClick={event => {
           const text = event.currentTarget.previousElementSibling?.textContent || ''; void copy(text, item.id + '-code');
         }}>{copied === item.id + '-code' ? <Check size={14} /> : <Copy size={14} />}</button></div>,
-      }}>{item.text}</Markdown></div>
+      }}>{visibleText}</Markdown></div>
       {!!item.questions?.length && <AsyncQuestions item={item} answeredQuestions={answeredQuestions} onAnswer={onAnswer} draftCache={questionDrafts} />}
-      <div className="message-actions">{!!item.text && <IconButton label="Скопировать ответ" onClick={() => void copy(item.text!, item.id)}>{copied === item.id ? <Check size={14} /> : <Copy size={14} />}</IconButton>}{canDelete && <IconButton label="Удалить с этого сообщения" onClick={() => onDelete(item)}><Trash2 size={14} /></IconButton>}</div>
+      <div className="message-actions">{!!visibleText && <IconButton label="Скопировать ответ" onClick={() => void copy(visibleText, item.id)}>{copied === item.id ? <Check size={14} /> : <Copy size={14} />}</IconButton>}{canDelete && <IconButton label="Удалить с этого сообщения" onClick={() => onDelete(item)}><Trash2 size={14} /></IconButton>}</div>
     </article>;
   }
   return <ToolCall item={item} />;
@@ -679,8 +710,9 @@ export function Approval({ request, onError, items }: { request: ServerRequest; 
     try { await api.answer({ id: request.id, decision, answers: Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, [value]])) }); }
     catch (error) { onError(errorText(error)); setBusy(false); }
   };
+  if (isElicitation) return <McpElicitation request={request} onError={onError} />;
   return <div className="approval-card" role="region" aria-label={isQuestion ? 'Вопрос Codex' : 'Запрос разрешения'}>
-    <div className="approval-title"><ShieldCheck size={17} /><strong>{isQuestion ? 'Codex уточняет' : isElicitation ? 'Запрос от инструмента' : 'Нужно ваше разрешение'}</strong></div>
+    <div className="approval-title"><ShieldCheck size={17} /><strong>{isQuestion ? 'Codex уточняет' : 'Нужно ваше разрешение'}</strong></div>
     {isQuestion ? request.params.questions?.map(question => <div className="approval-question" key={question.id}><label htmlFor={`answer-${question.id}`}>{question.question}</label>{question.options?.length ? <div className="question-options">{question.options.map(option => <button key={option.label} title={option.description} onClick={() => setAnswers(value => ({ ...value, [question.id]: option.label }))} className={answers[question.id] === option.label ? 'chosen' : ''}>{option.label}</button>)}</div> : null}<input id={`answer-${question.id}`} placeholder="Ваш ответ" value={answers[question.id] || ''} onChange={event => setAnswers(value => ({ ...value, [question.id]: event.target.value }))} /></div>) : <>
       <p>{request.params.reason || request.params.message || (isPermission ? 'Codex запрашивает дополнительные права для текущего хода.' : 'Codex хочет выполнить действие за пределами текущих разрешений.')}</p>
       {request.params.command && <pre>{request.params.command}</pre>}
@@ -688,8 +720,7 @@ export function Approval({ request, onError, items }: { request: ServerRequest; 
       {request.params.grantRoot && <pre>{request.params.grantRoot}</pre>}
       {isPermission && <pre>{JSON.stringify(request.params.permissions, null, 2)}</pre>}
       {item?.changes?.map(change => <details className="approval-diff" key={change.path}><summary>{change.path}</summary><pre>{change.diff}</pre></details>)}
-      {isElicitation && <p>Этот запрос требует формы или подтверждения, которое пока не поддерживается. Можно отклонить его и продолжить переписку.</p>}
     </>}
-    <div className="approval-actions">{!isQuestion && <button className="secondary-button" disabled={busy} onClick={() => void answer('decline')}>Отклонить</button>}{!isElicitation && <button className="primary-button" disabled={busy || (isQuestion && request.params.questions?.some(question => !answers[question.id]?.trim()))} onClick={() => void answer('accept')}>{busy ? 'Отправляем…' : isQuestion ? 'Ответить' : isPermission ? 'Разрешить на этот ход' : 'Разрешить один раз'}</button>}</div>
+    <div className="approval-actions">{!isQuestion && <button className="secondary-button" disabled={busy} onClick={() => void answer('decline')}>Отклонить</button>}<button className="primary-button" disabled={busy || (isQuestion && request.params.questions?.some(question => !answers[question.id]?.trim()))} onClick={() => void answer('accept')}>{busy ? 'Отправляем…' : isQuestion ? 'Ответить' : isPermission ? 'Разрешить на этот ход' : 'Разрешить один раз'}</button></div>
   </div>;
 }

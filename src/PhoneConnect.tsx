@@ -1,3 +1,4 @@
+import { Presence } from './Presence';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Copy, LoaderCircle, Smartphone, X } from 'lucide-react';
@@ -34,17 +35,17 @@ export function PhoneConnect() {
   const validCode = !!status?.qr && (status.expiresAt || 0) > now;
   return <>
     <button className={`phone-connect-trigger icon-button ${status?.enabled ? 'phone-on' : ''}`} type="button" title="Подключить телефон" aria-label="Подключить телефон" onClick={() => { setError(''); setOpen(true); }}><Smartphone size={17} /></button>
-    {open && createPortal(<div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false); }}>
+    {createPortal(<Presence show={open}><div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false); }}>
       <section className="phone-modal" role="dialog" aria-modal="true" aria-labelledby="phone-title">
         <div className="phone-modal-heading"><div><h2 id="phone-title">Телефон</h2><span>UniCode в одной Wi-Fi сети</span></div><button className="icon-button" type="button" aria-label="Закрыть подключение телефона" onClick={() => setOpen(false)}><X size={17} /></button></div>
         {error && <p className="phone-error" role="alert">{error}</p>}
         {!status ? <div className="phone-loading"><LoaderCircle className="spinning" size={21} /></div> : !status.enabled ? <>
-          <div className="phone-intro"><Smartphone size={30} strokeWidth={1.3} /><p>Отправляй сообщения и подтверждай действия агента с телефона.</p></div>
+          <div className="phone-intro"><Smartphone size={30} strokeWidth={1.3} /></div>
           {status.addresses.length > 1 && <div className="phone-networks" aria-label="Локальная сеть">{status.addresses.map(address => <button type="button" key={address.address} className={host === address.address ? 'selected' : ''} onClick={() => setHost(address.address)}><span>{address.name}</span><span>{address.address}</span>{host === address.address && <Check size={13} />}</button>)}</div>}
           {!status.addresses.length && <p className="phone-note">Подключи компьютер к Wi-Fi или локальной сети.</p>}
           <button className="primary-button phone-wide" disabled={busy || !host} onClick={() => void action(() => window.codex.phoneStart(host))}>{busy ? 'Включаем…' : 'Включить подключение'}</button>
         </> : <>
-          {validCode ? <div className="phone-pairing"><img src={status.qr!} alt="QR-код подключения к UniCode" width="220" height="220" /><p>Открой камерой телефона и подтверди подключение на компьютере.</p>
+          {validCode ? <div className="phone-pairing"><img src={status.qr!} alt="QR-код подключения к UniCode" width="220" height="220" /><p>Сканируй QR и подтверди на компьютере.</p>
             <div className="phone-code-footer"><span>{Math.max(1, Math.ceil(((status.expiresAt || 0) - now) / 60000))} мин</span><button type="button" onClick={() => {
               if (status.pairingUrl) void navigator.clipboard.writeText(status.pairingUrl).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 2000); }).catch(() => setError('Не удалось скопировать ссылку'));
             }}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? 'Скопировано' : 'Скопировать ссылку'}</button></div>
@@ -54,6 +55,6 @@ export function PhoneConnect() {
         </>}
         {status && !!status.devices.length && <div className="phone-devices">{status.devices.map(device => <div key={device.id}><Smartphone size={16} /><span>{device.name}</span><button type="button" aria-label={`Отключить ${device.name}`} disabled={busy} onClick={() => void action(() => window.codex.phoneRevoke(device.id))}><X size={14} /></button></div>)}</div>}
       </section>
-    </div>, document.body)}
+    </div></Presence>, document.body)}
   </>;
 }

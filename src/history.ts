@@ -2,7 +2,7 @@ import type { Item, Runtime } from './types';
 import { questionReplies } from './presentation';
 
 export const HISTORY_START = 1_000_000_000;
-const visibleTypes = new Set(['userMessage', 'agentMessage', 'commandExecution', 'fileChange', 'mcpToolCall', 'plan']);
+const visibleTypes = new Set(['userMessage', 'agentMessage', 'commandExecution', 'fileChange', 'mcpToolCall', 'plan', 'collabAgentToolCall', 'collabToolCall', 'subAgentActivity']);
 export const isVisibleItem = (item: Item) => visibleTypes.has(item.type)
   && (!['agentMessage', 'plan'].includes(item.type) || !!item.text || !!item.questions?.length);
 

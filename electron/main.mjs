@@ -11,12 +11,19 @@ import { AttentionNotifications } from './attention.mjs';
 import { HistoryReader, threadMetadata } from './history.mjs';
 import { EventStream } from './event-stream.mjs';
 import { PhoneServer } from './phone.mjs';
+import { AttachmentStore } from './attachments.mjs';
+import { elicitationResponse } from './elicitation.mjs';
+import { Connections } from './connections.mjs';
+import { AgentTracker } from './agents.mjs';
+import { autoOptions } from './auto.mjs';
+import { interruptForMessage } from './turn-control.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const isTest = process.env.CODEX_RED_TEST === '1' && !app.isPackaged;
 if (isTest && process.env.CODEX_RED_DATA) app.setPath('userData', process.env.CODEX_RED_DATA);
-app.setName('UniCode v1');
+app.setName('UniCode v2');
 if (process.platform === 'linux') app.setDesktopName('unicode-v1.desktop');
+// Keep the existing profile path so v2 retains chats, pairing and attachments.
 if (!isTest) app.setPath('userData', join(app.getPath('appData'), 'UniCode v1'));
 const ownsLock = isTest || app.requestSingleInstanceLock();
 if (!ownsLock) app.quit();
@@ -28,6 +35,9 @@ let history;
 let stream;
 let limitsRead;
 let phone;
+let attachments;
+let connections;
+let agents;
 let desktopShared;
 const sharedFields = value => ({ folders: value.folders, chats: value.chats, hidden: value.hidden });
 function mergeEntries(current, previous, incoming) {
@@ -49,6 +59,7 @@ let sharedState = '';
 const handlers = new Map();
 const liveTurns = new Map();
 const activeTurns = new Set();
+const sendingThreads = new Set();
 let quitting = false;
 const emit = (type, payload) => {
   if (window && !window.isDestroyed()) window.webContents.send('codex:event', { type, ...payload });
@@ -68,10 +79,24 @@ const accessModes = {
   'danger-full-access': { sandbox: 'danger-full-access', approvalPolicy: 'never' },
 };
 const options = async value => ({
+  serviceTier: value?.serviceTier === 'fast' ? 'priority' : null,
   ...(value?.cwd ? { cwd: await validCwd(value.cwd) } : {}),
   ...(typeof value?.model === 'string' && value.model.length < 150 && value.model ? { model: value.model } : {}),
   ...(Object.hasOwn(accessModes, value?.access) ? accessModes[value.access] : accessModes['workspace-write']), approvalsReviewer: 'user',
 });
+
+async function modelCatalog() {
+  const data = new Map(); const seen = new Set();
+  let cursor;
+  do {
+    const page = await rpc.request('model/list', { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) });
+    for (const model of page.data) if (!model.hidden) data.set(model.model, model);
+    cursor = page.nextCursor;
+    if (cursor && seen.has(cursor)) throw new Error('Не удалось загрузить полный список моделей');
+    if (cursor) seen.add(cursor);
+  } while (cursor);
+  return { data: [...data.values()], nextCursor: null };
+}
 
 function handle(name, fn) {
   handlers.set(name, fn);
@@ -93,15 +118,17 @@ async function openExternal(url) {
 function registerHandlers() {
   handle('bootstrap', async () => {
     const state = await store.read();
+    await agents.load();
     await rpc.connect();
     const [threads, models, account, config] = await Promise.allSettled([
       rpc.request('thread/list', { limit: 100, sortKey: 'updated_at', modelProviders: [], sourceKinds: ['cli', 'vscode', 'appServer'] }),
-      rpc.request('model/list', {}),
+      modelCatalog(),
       rpc.request('account/read', {}),
       rpc.request('config/read', {}),
     ]);
     if (threads.status === 'rejected') throw threads.reason;
-    return { state, home: homedir(), threads: threads.value,
+    for (const thread of threads.value.data) agents.thread(thread);
+    return { agents: agents.snapshot(), state, home: homedir(), threads: { ...threads.value, data: threads.value.data.map(threadMetadata) },
       models: models.status === 'fulfilled' ? models.value.data.filter(m => !m.hidden) : [],
       authenticated: account.status === 'fulfilled' && !!account.value.account,
       activeTurns: [...liveTurns].map(([threadId, turnId]) => ({ threadId, turnId })),
@@ -131,10 +158,12 @@ function registerHandlers() {
   handle('manage-chat', async action => {
     if (!action || typeof action !== 'object') throw new Error('Неверное действие');
     const { kind, id, name, folderId, pinned } = action;
-    if (!['rename', 'pin', 'move', 'hide', 'folder-create', 'folder-rename', 'folder-delete'].includes(kind)) throw new Error('Неизвестное действие');
+    if (!['rename', 'pin', 'move', 'hide', 'speed', 'auto-models', 'folder-create', 'folder-rename', 'folder-delete'].includes(kind)) throw new Error('Неизвестное действие');
     if (kind !== 'folder-create' && (typeof id !== 'string' || !id || id.length > 200)) throw new Error('Неверный идентификатор');
     if (['rename', 'folder-create', 'folder-rename'].includes(kind)
       && (typeof name !== 'string' || !name.trim() || name.length > (kind === 'rename' ? 120 : 80))) throw new Error('Неверное название');
+    if (kind === 'speed' && !['default', 'fast'].includes(action.serviceTier)) throw new Error('Неверный режим скорости');
+    if (kind === 'auto-models' && [action.autoCoordinator, action.autoWorker].some(model => typeof model !== 'string' || model.length > 150)) throw new Error('Неверная модель Auto');
     if (kind === 'pin' && typeof pinned !== 'boolean') throw new Error('Неверное закрепление');
     const value = await store.update(state => {
       if (['folder-rename', 'folder-delete'].includes(kind) && !state.folders.some(folder => folder.id === id)) throw new Error('Папка уже удалена');
@@ -145,7 +174,7 @@ function registerHandlers() {
         state.folders = state.folders.filter(folder => folder.id !== id);
         state.chats = Object.fromEntries(Object.entries(state.chats).map(([key, meta]) => [key, meta.folderId === id ? { ...meta, folderId: null } : meta]));
       } else if (kind === 'hide') state.hidden = [...new Set([...state.hidden, id])];
-      else state.chats[id] = { ...state.chats[id], ...(kind === 'rename' ? { name: name.trim() } : kind === 'pin' ? { pinned } : { folderId }) };
+      else state.chats[id] = { ...state.chats[id], ...(kind === 'rename' ? { name: name.trim() } : kind === 'pin' ? { pinned } : kind === 'speed' ? { serviceTier: action.serviceTier } : kind === 'auto-models' ? { model: 'auto', autoCoordinator: action.autoCoordinator, autoWorker: action.autoWorker, effort: state.chats[id]?.autoCoordinator === action.autoCoordinator ? state.chats[id]?.effort || '' : '' } : { folderId }) };
       return state;
     });
     const message = { folders: value.folders, chats: value.chats, hidden: value.hidden };
@@ -165,8 +194,14 @@ function registerHandlers() {
   });
   handle('list', (cursor = null, searchTerm = null) => rpc.request('thread/list', {
     limit: 100, cursor, sortKey: 'updated_at', modelProviders: [], sourceKinds: ['cli', 'vscode', 'appServer'], searchTerm,
-  }));
-  handle('history', (id, cursor = null) => history.read(threadId(id), cursor));
+  }).then(result => ({ ...result, data: result.data.map(threadMetadata) })));
+  handle('connections', (cursor, refresh, query) => connections.list(cursor, refresh, query));
+  handle('connection-enabled', value => connections.setEnabled(value));
+  handle('upload-attachment', value => attachments.upload(value));
+  handle('history', async (id, cursor = null) => {
+    const page = await history.read(threadId(id), cursor);
+    agents.history(id, page); return page;
+  });
   handle('delete-chat', async id => {
     id = threadId(id);
     if (activeTurns.has(id)) throw new Error('Сначала остановите текущий ответ');
@@ -185,33 +220,65 @@ function registerHandlers() {
     return history.read(id);
   });
   handle('send', async value => {
-    if (typeof value?.text !== 'string' || !value.text.trim() || value.text.length > 250_000) throw new Error('Сообщение пустое или слишком длинное');
-    await rpc.connect();
-    const params = await options(value);
-    const response = value.id
-      ? await rpc.request('thread/resume', { threadId: threadId(value.id), ...params, excludeTurns: true })
-      : await rpc.request('thread/start', params);
-    const id = response.thread.id;
-    const visibleThread = threadMetadata({ ...response.thread, preview: response.thread.preview || value.text.replace(/\s+/g, ' ').slice(0, 80) });
-    // Tell the renderer the canonical id before turn notifications can arrive.
-    emit('thread-ready', { localId: value.localId, thread: visibleThread });
+    if (value?.serviceTier !== undefined && !['default', 'fast'].includes(value.serviceTier)) throw new Error('Неверный режим скорости');
+    if (typeof value?.text !== 'string' || value.text.length > 250_000) throw new Error('Сообщение пустое или слишком длинное');
+    const sendKey = threadId(value.id || value.localId);
+    if (sendingThreads.has(sendKey)) throw new Error('Сообщение уже отправляется');
+    sendingThreads.add(sendKey);
     try {
-      const { turn } = await rpc.request('turn/start', {
-        threadId: id, input: [{ type: 'text', text: value.text, text_elements: [] }],
-        ...(value.model ? { model: value.model } : {}),
-        ...(typeof value.effort === 'string' && value.effort && value.effort.length < 100 ? { effort: value.effort } : {}),
+      await rpc.connect();
+      const input = await attachments.input(value.text, value.attachments);
+      const auto = value.model === 'auto';
+      const routing = auto ? autoOptions((await modelCatalog()).data, { autoCoordinator: value.autoCoordinator, autoWorker: value.autoWorker, effort: value.effort }) : null;
+      // Loaded sessions may keep their original developer instructions. Carry the
+      // user's explicit Auto choice in each new turn as well, including resumes.
+      if (routing) input.push({ type: 'text', text: `<unicode_auto>\nI selected UniCode Auto for this request. Delegate substantive implementation to subagents and review their actual work.\n${routing.developerInstructions}\n</unicode_auto>`, text_elements: [] });
+      const previousConfig = !auto && agents.autoRuns.has(value.id) ? (await rpc.request('config/read', {})).config : null;
+      const params = { ...await options({ ...value, model: routing?.model || value.model }),
+        ...(routing ? { model: routing.model, config: routing.config, developerInstructions: routing.developerInstructions } : agents.autoRuns.has(value.id) ? { developerInstructions: '', config: { 'agents.default_subagent_model': previousConfig?.agents?.default_subagent_model || value.model || previousConfig?.model || 'gpt-6.1-sol', 'agents.default_subagent_reasoning_effort': previousConfig?.agents?.default_subagent_reasoning_effort || 'medium', 'agents.max_concurrent_threads_per_session': previousConfig?.agents?.max_concurrent_threads_per_session || 6 } } : {}) };
+      if (value.id) {
+        const id = threadId(value.id);
+        if (value.interruptActive === true) await interruptForMessage({ rpc, agents, liveTurns, threadId: id });
+        else if ((await rpc.request('thread/read', { threadId: id, includeTurns: false })).thread.status?.type === 'active') throw new Error('Сначала дождитесь завершения текущего ответа');
+      }
+      const response = value.id
+        ? await rpc.request('thread/resume', { threadId: threadId(value.id), ...params, excludeTurns: true })
+        : await rpc.request('thread/start', params);
+      const id = response.thread.id;
+      agents.configureAuto(id, auto);
+      const visibleThread = threadMetadata({ ...response.thread, preview: response.thread.preview || value.text.replace(/\s+/g, ' ').slice(0, 80) || 'Прикреплённые файлы' });
+      // Tell the renderer the canonical id before turn notifications can arrive.
+      emit('thread-ready', { localId: value.localId, thread: visibleThread });
+      const saved = await store.update(state => {
+        const chats = { ...state.chats };
+        const draft = typeof value.localId === 'string' && value.localId.startsWith('draft-') && chats[value.localId]?.draft ? chats[value.localId] : {};
+        if (draft.draft && value.localId !== id) delete chats[value.localId];
+        chats[id] = { ...draft, ...chats[id], draft: false, model: value.model || '', effort: value.effort || '', access: value.access || 'workspace-write', serviceTier: value.serviceTier || 'default', cwd: visibleThread.cwd,
+          ...(routing ? { autoCoordinator: routing.model, autoWorker: routing.workerModel } : {}),
+        };
+        return { ...state, chats, selectedId: state.selectedId === value.localId ? id : state.selectedId };
       });
-      attention.answerText(id, value.text);
-      return { thread: visibleThread, turn };
-    } catch (error) {
-      emit('send-failed', { threadId: id, message: error.message });
-      throw error;
-    }
+      emit('state-updated', { message: sharedFields(saved) });
+      try {
+        const { turn } = await rpc.request('turn/start', {
+          threadId: id, input, serviceTierForTurn: value.serviceTier === 'fast' ? 'priority' : 'default',
+          ...(value.model ? { model: routing?.model || value.model } : {}),
+          ...(routing ? routing.effort ? { effort: routing.effort } : {} : typeof value.effort === 'string' && value.effort && value.effort.length < 100 ? { effort: value.effort } : {}),
+        });
+        attention.answerText(id, value.text);
+        return { thread: visibleThread, turn };
+      } catch (error) {
+        agents.cancelAuto(id);
+        emit('send-failed', { threadId: id, message: error.message });
+        throw error;
+      }
+    } finally { sendingThreads.delete(sendKey); }
   });
   handle('interrupt', value => rpc.request('turn/interrupt', { threadId: threadId(value.id), turnId: threadId(value.turnId) }));
   handle('steer', async value => {
-    if (typeof value?.text !== 'string' || !value.text.trim() || value.text.length > 250_000) throw new Error('Ответ пустой или слишком длинный');
-    const result = await rpc.request('turn/steer', { threadId: threadId(value.id), expectedTurnId: threadId(value.turnId), input: [{ type: 'text', text: value.text, text_elements: [] }] });
+    if (typeof value?.text !== 'string' || value.text.length > 250_000) throw new Error('Ответ пустой или слишком длинный');
+    const input = await attachments.input(value.text, value.attachments);
+    const result = await rpc.request('turn/steer', { threadId: threadId(value.id), expectedTurnId: threadId(value.turnId), input });
     attention.answerText(value.id, value.text);
     return result;
   });
@@ -219,7 +286,7 @@ function registerHandlers() {
     const result = await dialog.showOpenDialog(window, { title: 'Папка проекта', properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
   });
-  handle('answer', ({ id, decision, answers }) => {
+  handle('answer', ({ id, decision, answers, content }) => {
     const request = rpc.requests.get(id);
     if (!request) throw new Error('Запрос уже закрыт');
     const allow = decision === 'accept';
@@ -234,7 +301,7 @@ function registerHandlers() {
     } else if (request.method === 'item/permissions/requestApproval') {
       rpc.respond(id, { permissions: allow ? request.params.permissions : {}, scope: 'turn' });
     } else if (request.method === 'mcpServer/elicitation/request') {
-      rpc.respond(id, { action: 'decline', content: null, _meta: null });
+      rpc.respond(id, elicitationResponse(request.params, decision, content));
     } else if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(request.method)) {
       rpc.respond(id, { decision: allow ? 'accept' : 'decline' });
     } else throw new Error('Неподдерживаемый запрос');
@@ -258,8 +325,8 @@ function registerHandlers() {
 async function createWindow() {
   window = new BrowserWindow({
     width: 1220, height: 820, minWidth: 780, minHeight: 560,
-    title: 'UniCode v1', backgroundColor: '#ffffff', frame: false, show: false,
-    icon: nativeImage.createFromPath(join(root, 'assets/icon.png')),
+    title: 'UniCode v2', backgroundColor: '#06130f', frame: false, show: false,
+    icon: nativeImage.createFromPath(join(root, 'assets/icon-v2.png')),
     webPreferences: {
       preload: join(root, 'electron/preload.cjs'), contextIsolation: true,
       nodeIntegration: false, sandbox: true, spellcheck: false,
@@ -287,7 +354,10 @@ async function createWindow() {
 if (ownsLock) {
   app.whenReady().then(async () => {
     store = new LocalStore(join(app.getPath('userData'), 'state.json'));
+    attachments = new AttachmentStore(join(app.getPath('userData'), 'attachments'));
     rpc = new CodexRpc({ cwd: homedir() });
+    agents = new AgentTracker({ rpc, path: join(app.getPath('userData'), 'agents.json'), changed: message => emit('agents-updated', { message }) });
+    connections = new Connections(rpc, () => emit('connections-updated', {}));
     history = new HistoryReader(rpc);
     stream = new EventStream(emit);
     phone = new PhoneServer({
@@ -307,7 +377,7 @@ if (ownsLock) {
         if (window.isMinimized()) window.restore();
         window.show(); window.focus();
         const { response } = await dialog.showMessageBox(window, {
-          type: 'question', title: 'UniCode v1', message: `Подключить ${name}?`,
+          type: 'question', title: 'UniCode v2', message: `Подключить ${name}?`,
           detail: 'Устройство получит доступ к переписке, отправке сообщений и подтверждению действий агента.',
           buttons: ['Подключить', 'Отмена'], defaultId: 1, cancelId: 1,
         });
@@ -315,7 +385,7 @@ if (ownsLock) {
       },
     });
     attention = new AttentionNotifications({
-      icon: join(root, 'assets/icon.png'),
+      icon: join(root, 'assets/icon-v2.png'),
       sound: app.isPackaged ? join(process.resourcesPath, 'app.asar.unpacked/assets/attention.wav') : join(root, 'assets/attention.wav'),
       enabled: !isTest,
       indicate: () => { if (window && !window.isDestroyed() && !window.isFocused()) window.flashFrame(true); },
@@ -327,14 +397,16 @@ if (ownsLock) {
       },
     });
     rpc.on('notification', message => {
+      agents.observe(message);
       if (message.method === 'turn/started') { activeTurns.add(message.params.threadId); liveTurns.set(message.params.threadId, message.params.turn.id); }
-      if (message.method === 'turn/completed') { activeTurns.delete(message.params.threadId); liveTurns.delete(message.params.threadId); }
+      if (message.method === 'turn/completed' && liveTurns.get(message.params.threadId) === message.params.turn.id) { activeTurns.delete(message.params.threadId); liveTurns.delete(message.params.threadId); }
       attention.observe(message);
       stream.publish(message);
     });
-    rpc.on('disconnected', message => { stream.flush(); activeTurns.clear(); liveTurns.clear(); attention.clear(); emit('disconnected', { message }); });
+    rpc.on('disconnected', message => { agents.disconnected(); stream.flush(); activeTurns.clear(); liveTurns.clear(); attention.clear(); emit('disconnected', { message }); });
     rpc.on('request', message => {
       stream.flush();
+      agents.request(message);
       const supported = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput', 'mcpServer/elicitation/request'];
       if (supported.includes(message.method)) { emit('request', { message }); attention.request(message); }
       else rpc.rejectRequest(message.id);
@@ -351,6 +423,6 @@ if (ownsLock) {
     attention?.dispose();
     stream?.close();
     rpc?.close();
-    Promise.allSettled([store?.queue, phone?.stop()]).finally(() => app.quit());
+    Promise.allSettled([store?.queue, attachments?.queue, agents?.close(), phone?.stop()]).finally(() => app.quit());
   });
 }

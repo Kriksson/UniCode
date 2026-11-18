@@ -1,6 +1,6 @@
 {
   "name": "unicode-v1",
-  "version": "1.5.3",
+  "version": "2.2.0",
   "author": "krkss",
   "desktopName": "unicode-v1.desktop",
   "private": true,
@@ -39,11 +39,11 @@
   },
   "build": {
     "appId": "local.krkss.unicode",
-    "productName": "UniCode v1",
+    "productName": "UniCode v2",
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "assets/icon.png",
+      "assets/icon-v2.png",
       "assets/attention.wav",
       "package.json"
     ],
@@ -59,7 +59,8 @@
         "AppImage"
       ],
       "category": "Development",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon-v2.png",
+      "executableName": "unicode-v1"
     }
   }
 }

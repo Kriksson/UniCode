@@ -1,5 +1,15 @@
+export type Attachment = { id: string; name: string; size: number; image: boolean };
+export type Subagent = {
+  id: string; parentId: string; name: string; task: string; model?: string; cwd?: string;
+  status: string; activity: string; result?: string; introduction?: string; deleted?: boolean; agentPath?: string; updatedAt: number;
+};
 export type Item = {
-  id: string; type: string; turnId?: string; text?: string; content?: { type: string; text?: string }[];
+  kind?: string; agentThreadId?: string; agentPath?: string;
+  senderThreadId?: string; receiverThreadIds?: string[]; prompt?: string; model?: string;
+  agentsStates?: Record<string, { status: string; message?: string | null }>;
+
+  attachments?: Attachment[];
+  id: string; type: string; turnId?: string; text?: string; content?: { type: string; text?: string; path?: string }[];
   command?: string; aggregatedOutput?: string; status?: string; exitCode?: number;
   server?: string; tool?: string; changes?: { path: string; diff?: string }[];
   summary?: string[]; error?: { message: string }; phase?: string;
@@ -16,12 +26,15 @@ export type Thread = {
 export type Meta = {
   name?: string; folderId?: string | null; pinned?: boolean; cwd?: string;
   draft?: boolean; createdAt?: number; updatedAt?: number;
-  model?: string; effort?: string; access?: State['access'];
+  model?: string; effort?: string; access?: State['access']; serviceTier?: 'default' | 'fast';
+  autoCoordinator?: string; autoWorker?: string;
 };
 export type ChatAction =
   | { kind: 'rename'; id: string; name: string }
   | { kind: 'pin'; id: string; pinned: boolean }
   | { kind: 'move'; id: string; folderId: string | null }
+  | { kind: 'speed'; id: string; serviceTier: 'default' | 'fast' }
+  | { kind: 'auto-models'; id: string; autoCoordinator: string; autoWorker: string }
   | { kind: 'hide'; id: string }
   | { kind: 'folder-create'; name: string }
   | { kind: 'folder-rename'; id: string; name: string }
@@ -31,16 +44,18 @@ export type State = {
   hidden: string[]; selectedId: string | null; cwd: string | null; model: string;
   drafts?: Record<string, string>;
   effort?: string;
+  autoCoordinator?: string; autoWorker?: string;
+  serviceTier?: 'default' | 'fast';
   access?: 'read-only' | 'workspace-write' | 'danger-full-access';
 };
-export type Model = { id: string; model: string; displayName: string; isDefault: boolean;
+export type Model = { serviceTiers?: { id: string; name: string; description: string }[]; additionalSpeedTiers?: string[]; id: string; model: string; displayName: string; isDefault: boolean;
   supportedReasoningEfforts?: { reasoningEffort: string; description: string }[]; defaultReasoningEffort?: string; };
 export type Question = { id: string; header?: string; question: string; options?: { label: string; description: string }[] };
 export type ServerRequest = {
   id: string | number; method: string;
   params: { threadId: string; turnId: string; itemId?: string; command?: string; reason?: string;
     cwd?: string; grantRoot?: string; permissions?: unknown; questions?: Question[];
-    message?: string; url?: string; requestedSchema?: unknown; };
+    message?: string; url?: string; requestedSchema?: unknown; serverName?: string; mode?: string; elicitationId?: string; };
 };
 export type HistoryCursor = { kind: 'items' | 'turns'; token: string };
 export type HistoryPage = { thread?: Thread; items: Item[]; cursor: HistoryCursor | null };
@@ -57,6 +72,11 @@ export type RateLimitSnapshot = {
   limitId?: string | null; limitName?: string | null; primary?: RateLimitWindow | null; secondary?: RateLimitWindow | null;
 };
 export type AccountLimits = { rateLimits?: RateLimitSnapshot | null; rateLimitsByLimitId?: Record<string, RateLimitSnapshot> | null };
+export type Connection = {
+  id: string; name: string; description: string; installUrl: string | null;
+  isAccessible: boolean; isEnabled: boolean; enabled: boolean; runtimeKnown: boolean; callable: boolean;
+};
+export type ConnectionsPage = { data: Connection[]; nextCursor: string | null; runtimeWarning: string | null; loading: boolean; total: number };
 export type PhoneStatus = {
   enabled: boolean; addresses: { name: string; address: string; netmask: string }[];
   host: string | null; url: string | null; pairingUrl: string | null; expiresAt: number | null; qr: string | null;
@@ -66,7 +86,9 @@ export type PhoneStatus = {
 declare global {
   interface Window {
     codex: {
-      bootstrap(): Promise<{ state: State; home: string; threads: { data: Thread[]; nextCursor: string | null }; models: Model[]; authenticated: boolean; requests: ServerRequest[]; defaults?: { model: string; effort: string }; activeTurns?: { threadId: string; turnId: string }[] }>;
+      bootstrap(): Promise<{ agents?: Subagent[]; state: State; home: string; threads: { data: Thread[]; nextCursor: string | null }; models: Model[]; authenticated: boolean; requests: ServerRequest[]; defaults?: { model: string; effort: string }; activeTurns?: { threadId: string; turnId: string }[] }>;
+      connections(cursor?: string | null, refresh?: boolean, query?: string): Promise<ConnectionsPage>;
+      connectionEnabled(value: { id: string; enabled: boolean }): Promise<void>;
       phoneStatus(): Promise<PhoneStatus>;
       phoneStart(host?: string): Promise<PhoneStatus>;
       phoneStop(): Promise<PhoneStatus>;
@@ -74,14 +96,15 @@ declare global {
       phoneRevoke(id: string): Promise<PhoneStatus>;
       rateLimits(): Promise<AccountLimits | null>;
       save(state: State): Promise<void>;
+      uploadAttachment(value: { name: string; data: string }): Promise<Attachment>;
       manageChat(action: ChatAction): Promise<Pick<State, 'folders' | 'chats' | 'hidden'>>;
       list(cursor?: string | null, searchTerm?: string | null): Promise<{ data: Thread[]; nextCursor: string | null }>;
       history(id: string, cursor?: HistoryCursor | null): Promise<HistoryPage>;
-      send(value: { id?: string; localId: string; text: string; cwd: string; model: string; effort?: string; access?: State['access'] }): Promise<{ thread: Thread; turn: Turn }>;
-      steer(value: { id: string; turnId: string; text: string }): Promise<unknown>;
+      send(value: { id?: string; localId: string; text: string; attachments?: string[]; interruptActive?: boolean; serviceTier?: 'default' | 'fast'; cwd: string; model: string; effort?: string; access?: State['access']; autoCoordinator?: string; autoWorker?: string }): Promise<{ thread: Thread; turn: Turn }>;
+      steer(value: { id: string; turnId: string; text: string; attachments?: string[] }): Promise<unknown>;
       interrupt(value: { id: string; turnId: string }): Promise<unknown>;
       chooseFolder(): Promise<string | null>;
-      answer(value: { id: string | number; decision?: string; answers?: Record<string, string[]> }): Promise<void>;
+      answer(value: { id: string | number; decision?: string; content?: Record<string, unknown>; answers?: Record<string, string[]> }): Promise<void>;
       login(): Promise<unknown>;
       external(url: string): Promise<void>;
       openLink(value: { href: string; cwd?: string }): Promise<void>;

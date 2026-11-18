@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#225d45"/><stop offset=".46" stop-color="#103d2d"/><stop offset="1" stop-color="#081f18"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2=".8" y2="1">
+      <stop stop-color="#c5ffe2" stop-opacity=".8"/><stop offset=".48" stop-color="#7fe8b4" stop-opacity=".2"/><stop offset="1" stop-color="#5fcf9b" stop-opacity=".4"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2=".7" y2="1">
+      <stop stop-color="#d5ffe8"/><stop offset="1" stop-color="#73e9ad"/>
+    </linearGradient>
+    <radialGradient id="light" cx=".1" cy="0" r="1">
+      <stop stop-color="#afffd2" stop-opacity=".17"/><stop offset=".7" stop-color="#afffd2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="17" y="17" width="478" height="478" rx="126" fill="url(#body)"/>
+  <rect x="18" y="18" width="476" height="476" rx="125" fill="url(#light)" stroke="url(#rim)" stroke-width="3"/>
+  <path d="M127 128h74v153c0 36 15 52 55 52s55-16 55-52V128h74v158c0 73-43 111-129 111s-129-38-129-111V128Z" fill="url(#mark)"/>
+</svg>
